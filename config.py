@@ -5,4 +5,4 @@ class SETTINGS:
     comment_construction: bool = True
     skip_construction: bool = False
     comments_indent: int = 40
-    construction_pen_name: str = ", construction"
+    construction_pen_name: str = "construction"
