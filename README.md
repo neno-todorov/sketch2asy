@@ -2,7 +2,6 @@
 Export [**FreeCAD**](https://www.freecadweb.org/) [Sketcher SketchObject](https://wiki.freecadweb.org/Sketcher_SketchObject) to [**Asymptote**](https://asymptote.sourceforge.io/) (vector graphics language).
 
 ## Usage
----
 
 * double click on a sketch or *right click > Edit sketch*;
 * open ```sketch2asy.py``` in the editor (drag and drop to FreeCAD);
@@ -10,7 +9,6 @@ Export [**FreeCAD**](https://www.freecadweb.org/) [Sketcher SketchObject](https:
 * go to *View > Panels > Report view* to see the output.
 
 ## Other
----
 
 Arcs of ellipse, hyperbola and parabola are not implemented (yet).
 
