@@ -1,11 +1,12 @@
+from typing import Optional
+
 import FreeCAD
-import numpy
 import Part
 import Sketcher
+import numpy
 
-from typing import Optional
+import config
 from coordinates import get_coordinates
-from config import SETTINGS
 
 
 def draw_line_segment(element: Sketcher.GeometryFacade, pairs: dict[str, str]) -> str:
@@ -54,7 +55,9 @@ def draw_arc_of_circle(element: Sketcher.GeometryFacade, pairs: dict[str, str]) 
     return _draw(path, pen=pen, comment=comment)
 
 
-def draw_b_spline_to_bezier(element: Sketcher.GeometryFacade, pairs: dict[str, str]) -> str:
+def draw_b_spline_to_bezier(
+        element: Sketcher.GeometryFacade, pairs: dict[str, str]
+) -> str:
     # draw(z0..controls c0 and c1..z1);
     # draw((0,0)..controls (0,100) and (100,100)..(100,0));
     pen = _get_pen(element)
@@ -74,9 +77,9 @@ def draw_point(element: Sketcher.GeometryFacade, pairs: dict[str, str]) -> str:
     pnt = _pair(element.Geometry, pairs)
     line = f"dot({pnt}, {pen});" if pen is not None else f"dot({pnt});"
 
-    if SETTINGS.skip_construction and pen == SETTINGS.construction_pen_name:
+    if config.SKIP_CONSTRUCTION and pen == config.CONSTRUCTION_PEN_NAME:
         return ""
-    if SETTINGS.comment_construction and pen == SETTINGS.construction_pen_name:
+    if config.COMMENT_CONSTRUCTION and pen == config.CONSTRUCTION_PEN_NAME:
         return f"// {line}\n"
 
     return f"{line}\n"
@@ -87,22 +90,25 @@ def _draw(path: str, pen: str, comment: str = "") -> str:
     comment = f"// {comment}" if comment != "" else ""
     line = f"draw({path}, {pen});" if pen is not None else f"draw({path});"
 
-    if SETTINGS.skip_construction and pen == SETTINGS.construction_pen_name:
+    if config.SKIP_CONSTRUCTION and pen == config.CONSTRUCTION_PEN_NAME:
         return ""
-    if SETTINGS.comment_construction and pen == SETTINGS.construction_pen_name:
-        return f"// {line: <{SETTINGS.comments_indent}} {comment}\n"
+    if config.COMMENT_CONSTRUCTION and pen == config.CONSTRUCTION_PEN_NAME:
+        return f"// {line: <{config.COMMENTS_INDENT}} {comment}\n"
 
-    return f"{line: <{SETTINGS.comments_indent}} {comment}\n"
+    return f"{line: <{config.COMMENTS_INDENT}} {comment}\n"
 
 
 def _get_pen(element: Sketcher.GeometryFacade) -> Optional[str]:
     if element.Construction:
-        return SETTINGS.construction_pen_name
+        return config.CONSTRUCTION_PEN_NAME
 
     return None
 
 
-def _pair(pnt: FreeCAD.Vector | Part.Point | numpy.ndarray, pairs: Optional[dict[str, str]] = None) -> str:
+def _pair(
+        pnt: FreeCAD.Vector | Part.Point | numpy.ndarray,
+        pairs: Optional[dict[str, str]] = None,
+) -> str:
     # тази функция може да не е най-добрият вариант
     x, y = get_coordinates(pnt)
     p = f"({_to_str(x)}, {_to_str(y)})"
@@ -120,4 +126,7 @@ def _get_length(element: Sketcher.GeometryFacade) -> str:
 
 
 def _to_str(x: float | int, n_digits: Optional[int] = None) -> str:
-    return f"{x: .{n_digits or SETTINGS.accuracy}f}"
+    if (n_digits or config.ACCURACY) > 0:
+        return f"{x: .{n_digits or config.ACCURACY}f}"
+
+    return f"{x:g}"

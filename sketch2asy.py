@@ -1,21 +1,22 @@
-"""FreeCAD sketch to asymptote.
-Open this file with FreeCAD go to View > Panels > Report view to see the output"""
+"""FreeCAD sketch to asymptote. Open this file with FreeCAD go to View > Panels > Report view to see the output"""
 
-import draw
-import Sketcher
-import Part
+from datetime import datetime
+
 import FreeCAD as app
 import FreeCADGui as gui
-from datetime import datetime
-from config import SETTINGS
+import Part
+import Sketcher
 
+import config
+import draw
 
-SETTINGS.accuracy = 2
-SETTINGS.comment_construction = 1
-SETTINGS.print_dot_labels = 1
-SETTINGS.comments_indent = 35
-SETTINGS.construction_pen_name = "construction"
-SETTINGS.skip_construction = 1
+config.ACCURACY = 1
+config.COMMENT_CONSTRUCTION = 0
+config.PRINT_DOT_LABELS = 0
+config.COMMENTS_INDENT = 25
+config.SKIP_CONSTRUCTION = 0
+config.CONSTRUCTION_PEN_NAME = "construction"
+config.CONSTRUCTION_PEN_COLOR = "lightblue"
 
 
 def draw_elements(element: Sketcher.GeometryFacade, pairs: dict[str, str]) -> str:
@@ -38,9 +39,9 @@ def draw_elements(element: Sketcher.GeometryFacade, pairs: dict[str, str]) -> st
 def main():
     date = datetime.now().strftime("%Y-%m-%d - %H:%M:%S")
     preamble = (
-        f"// sketch2asy.py {SETTINGS.version}\n// exported      "
+        f"\n// sketch2asy.py {config.VERSION}\n// exported      "
         f"{date}\nunitsize(1pt);\n"
-        f"pen {SETTINGS.construction_pen_name} = invisible;\n"
+        f"pen {config.CONSTRUCTION_PEN_NAME} = {config.CONSTRUCTION_PEN_COLOR};\n"
     )
 
     define_pairs = "\n// pairs\n"
@@ -62,11 +63,11 @@ def main():
 
         show_dots += "*/\n"
 
-        if not SETTINGS.print_dot_labels:
+        if not config.PRINT_DOT_LABELS:
             show_dots = ""
 
-        for text in [preamble, define_pairs, show_dots, draw_paths]:
-            app.Console.PrintMessage(text)
+        asy_output = "".join(i for i in [preamble, define_pairs, show_dots, draw_paths])
+        app.Console.PrintMessage(asy_output)
 
 
 if __name__ == "__main__":
