@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Dict, Optional
 
 import FreeCAD
 import Part
@@ -9,7 +9,7 @@ import config
 from coordinates import get_coordinates
 
 
-def draw_line_segment(element: Sketcher.GeometryFacade, pairs: dict[str, str]) -> str:
+def draw_line_segment(element: Sketcher.GeometryFacade, pairs: Dict[str, str]) -> str:
     # path pair p1 -- pair p2;
     pen = _get_pen(element)
     p1 = _pair(element.Geometry.StartPoint, pairs)
@@ -20,7 +20,7 @@ def draw_line_segment(element: Sketcher.GeometryFacade, pairs: dict[str, str]) -
     return _draw(path, pen=pen, comment=comment)
 
 
-def draw_circle(element: Sketcher.GeometryFacade, pairs: dict[str, str]) -> str:
+def draw_circle(element: Sketcher.GeometryFacade, pairs: Dict[str, str]) -> str:
     # path circle(pair c, real r);
     pen = _get_pen(element)
     c = _pair(element.Geometry.Center, pairs)
@@ -30,7 +30,7 @@ def draw_circle(element: Sketcher.GeometryFacade, pairs: dict[str, str]) -> str:
     return _draw(path, pen=pen)
 
 
-def draw_ellipse(element: Sketcher.GeometryFacade, pairs: dict[str, str]) -> str:
+def draw_ellipse(element: Sketcher.GeometryFacade, pairs: Dict[str, str]) -> str:
     # path shift(pair c)*rotate(angle)*scale(real a, real b)*unitcircle;
     pen = _get_pen(element)
     c = _pair(element.Geometry.Location, pairs)
@@ -42,7 +42,7 @@ def draw_ellipse(element: Sketcher.GeometryFacade, pairs: dict[str, str]) -> str
     return _draw(path, pen=pen)
 
 
-def draw_arc_of_circle(element: Sketcher.GeometryFacade, pairs: dict[str, str]) -> str:
+def draw_arc_of_circle(element: Sketcher.GeometryFacade, pairs: Dict[str, str]) -> str:
     # path arc(pair c, real r, real angle1, real angle2);
     # path arc(pair c, explicit pair z1, explicit pair z2, bool direction=CCW)
     pen = _get_pen(element)
@@ -55,9 +55,7 @@ def draw_arc_of_circle(element: Sketcher.GeometryFacade, pairs: dict[str, str]) 
     return _draw(path, pen=pen, comment=comment)
 
 
-def draw_b_spline_to_bezier(
-        element: Sketcher.GeometryFacade, pairs: dict[str, str]
-) -> str:
+def draw_b_spline_to_bezier(element: Sketcher.GeometryFacade, pairs: Dict[str, str]) -> str:
     # draw(z0..controls c0 and c1..z1);
     # draw((0,0)..controls (0,100) and (100,100)..(100,0));
     pen = _get_pen(element)
@@ -71,15 +69,15 @@ def draw_b_spline_to_bezier(
     return _draw(path, pen=pen, comment=comment)
 
 
-def draw_point(element: Sketcher.GeometryFacade, pairs: dict[str, str]) -> str:
+def draw_point(element: Sketcher.GeometryFacade, pairs: Dict[str, str]) -> str:
     # pair p;
     pen = _get_pen(element)
     pnt = _pair(element.Geometry, pairs)
     line = f"dot({pnt}, {pen});" if pen is not None else f"dot({pnt});"
 
-    if config.SKIP_CONSTRUCTION and pen == config.CONSTRUCTION_PEN_NAME:
+    if config.skip_construction and pen == config.construction_pen_name:
         return ""
-    if config.COMMENT_CONSTRUCTION and pen == config.CONSTRUCTION_PEN_NAME:
+    if config.comment_construction and pen == config.construction_pen_name:
         return f"// {line}\n"
 
     return f"{line}\n"
@@ -90,24 +88,24 @@ def _draw(path: str, pen: str, comment: str = "") -> str:
     comment = f"// {comment}" if comment != "" else ""
     line = f"draw({path}, {pen});" if pen is not None else f"draw({path});"
 
-    if config.SKIP_CONSTRUCTION and pen == config.CONSTRUCTION_PEN_NAME:
+    if config.skip_construction and pen == config.construction_pen_name:
         return ""
-    if config.COMMENT_CONSTRUCTION and pen == config.CONSTRUCTION_PEN_NAME:
-        return f"// {line: <{config.COMMENTS_INDENT}} {comment}\n"
+    if config.comment_construction and pen == config.construction_pen_name:
+        return f"// {line: <{config.comments_indent}} {comment}\n"
 
-    return f"{line: <{config.COMMENTS_INDENT}} {comment}\n"
+    return f"{line: <{config.comments_indent}} {comment}\n"
 
 
 def _get_pen(element: Sketcher.GeometryFacade) -> Optional[str]:
     if element.Construction:
-        return config.CONSTRUCTION_PEN_NAME
+        return config.construction_pen_name
 
     return None
 
 
 def _pair(
-        pnt: FreeCAD.Vector | Part.Point | numpy.ndarray,
-        pairs: Optional[dict[str, str]] = None,
+    pnt: FreeCAD.Vector | Part.Point | numpy.ndarray,
+    pairs: Optional[Dict[str, str]] = None,
 ) -> str:
     # тази функция може да не е най-добрият вариант
     x, y = get_coordinates(pnt)
@@ -125,8 +123,8 @@ def _get_length(element: Sketcher.GeometryFacade) -> str:
     return _to_str(element.Geometry.length())
 
 
-def _to_str(x: float | int, n_digits: Optional[int] = None) -> str:
-    if (n_digits or config.ACCURACY) > 0:
-        return f"{x: .{n_digits or config.ACCURACY}f}"
+def _to_str(x: float | int, n_digits: Optional[int] = config.accuracy) -> str:
+    if n_digits > 0:
+        return f"{x: .{n_digits}f}"
 
     return f"{x:g}"
