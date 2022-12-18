@@ -1,0 +1,28 @@
+[tool.poetry]
+name = "sketch2asy"
+version = "0.1.0"
+description = ""
+authors = ["Neno Todorov <neno-todorov@users.noreply.github.com>"]
+
+[tool.poetry.dependencies]
+python = ">=3.10.0"
+numpy = "^1.22.1"
+
+[tool.poetry.dev-dependencies]
+black = "^21.11b1"
+isort = "^5.9.3"
+
+[tool.black]
+line-length = 100
+target-version = ['py36', 'py37', 'py38']
+include = '\.pyi?$'
+
+[tool.isort]
+atomic = true
+case_sensitive = true
+include_trailing_comma = false
+line_length = 100
+multi_line_output = 3 # vertical hanging indent
+use_parentheses = false
+filter_files = true
+skip_glob = "reports/*"

@@ -12,4 +12,4 @@ Export [**FreeCAD**](https://www.freecadweb.org/) [Sketcher SketchObject](https:
 
 Arcs of ellipse, hyperbola and parabola are not implemented (yet).
 
-Tested with ```FreeCAD 0.20.1``` and ```Python 3.10.6```
+Tested with ```FreeCAD 0.20.1``` and ```Python 3.10.6```.

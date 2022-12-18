@@ -1,10 +1,10 @@
 """Basic configuration"""
 
-VERSION: str = "2022-12-16"
-CONSTRUCTION_PEN_NAME: str = "construction"
-CONSTRUCTION_PEN_COLOR: str = "invisible"
-ACCURACY: int = 2
-COMMENTS_INDENT: int = 40
-PRINT_DOT_LABELS: bool = False
-COMMENT_CONSTRUCTION: bool = False
-SKIP_CONSTRUCTION: bool = False
+version: str = "2022-12-16"
+construction_pen_name: str = "construction"
+construction_pen_color: str = "invisible"
+accuracy: int = 2
+comments_indent: int = 40
+print_dot_labels: bool = False
+comment_construction: bool = False
+skip_construction: bool = False
