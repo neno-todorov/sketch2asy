@@ -12,10 +12,10 @@ import config
 import draw
 
 config.accuracy = 1
-config.comment_construction = 0
-config.print_dot_labels = 0
+config.comment_construction = False
+config.print_dot_labels = False
 config.comments_indent = 25
-config.skip_construction = 0
+config.skip_construction = False
 config.construction_pen_name = "construction"
 config.construction_pen_color = "lightblue"
 
@@ -37,10 +37,10 @@ def draw_elements(element: Sketcher.GeometryFacade, pairs: Dict[str, str]) -> st
     return f"// {type(element.Geometry).__name__} is not implemented yet.\n"
 
 
-def main():
+def main() -> None:
     date = datetime.now().strftime("%Y-%m-%d - %H:%M:%S")
     preamble = (
-        f"\n// sketch2asy.py {config.VERSION}\n// exported      "
+        f"\n// sketch2asy.py {config.version}\n// exported      "
         f"{date}\nunitsize(1pt);\n"
         f"pen {config.construction_pen_name} = {config.construction_pen_color};\n"
     )

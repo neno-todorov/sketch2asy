@@ -3,7 +3,8 @@ from typing import Dict, Optional
 import FreeCAD
 import Part
 import Sketcher
-import numpy
+import numpy as np
+import numpy.typing as npt
 
 import config
 from coordinates import get_coordinates
@@ -36,7 +37,7 @@ def draw_ellipse(element: Sketcher.GeometryFacade, pairs: Dict[str, str]) -> str
     c = _pair(element.Geometry.Location, pairs)
     a = _to_str(element.Geometry.MajorRadius)
     b = _to_str(element.Geometry.MinorRadius)
-    angle = _to_str(numpy.rad2deg(element.Geometry.AngleXU))
+    angle = _to_str(np.rad2deg(element.Geometry.AngleXU))
     path = f"shift({c})*rotate({angle})*scale({a}, {b})*unitcircle"
 
     return _draw(path, pen=pen)
@@ -83,7 +84,7 @@ def draw_point(element: Sketcher.GeometryFacade, pairs: Dict[str, str]) -> str:
     return f"{line}\n"
 
 
-def _draw(path: str, pen: str, comment: str = "") -> str:
+def _draw(path: str, pen: Optional[str], comment: str = "") -> str:
     # draw(path p, pen pen); // comment
     comment = f"// {comment}" if comment != "" else ""
     line = f"draw({path}, {pen});" if pen is not None else f"draw({path});"
@@ -104,7 +105,7 @@ def _get_pen(element: Sketcher.GeometryFacade) -> Optional[str]:
 
 
 def _pair(
-    pnt: FreeCAD.Vector | Part.Point | numpy.ndarray,
+    pnt: FreeCAD.Vector | Part.Point | npt.NDArray[np.float64],
     pairs: Optional[Dict[str, str]] = None,
 ) -> str:
     # тази функция може да не е най-добрият вариант
@@ -123,7 +124,7 @@ def _get_length(element: Sketcher.GeometryFacade) -> str:
     return _to_str(element.Geometry.length())
 
 
-def _to_str(x: float | int, n_digits: Optional[int] = config.accuracy) -> str:
+def _to_str(x: float | int, n_digits: int = config.accuracy) -> str:
     if n_digits > 0:
         return f"{x: .{n_digits}f}"
 

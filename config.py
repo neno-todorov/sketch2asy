@@ -1,6 +1,6 @@
 """Basic configuration"""
 
-version: str = "2022-12-16"
+version: str = "2022-12-20"
 construction_pen_name: str = "construction"
 construction_pen_color: str = "invisible"
 accuracy: int = 2
