@@ -1,7 +1,8 @@
 # Other
 *.asy
-*.pdf
 *.FCS*
+*.pdf
+*.png
 .idea/
 
 # Byte-compiled / optimized / DLL files
