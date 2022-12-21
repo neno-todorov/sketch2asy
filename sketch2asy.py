@@ -8,13 +8,19 @@ import FreeCADGui as gui
 import Part
 import Sketcher
 
+import os
+import sys
+
+
+sys.path.append(os.path.dirname(__file__))
+
 import config
 import draw
 
-config.accuracy = 1
+config.accuracy = -1
 config.comment_construction = False
 config.print_dot_labels = False
-config.comments_indent = 25
+config.comments_indent = 30
 config.skip_construction = False
 config.construction_pen_name = "construction"
 config.construction_pen_color = "lightblue"
