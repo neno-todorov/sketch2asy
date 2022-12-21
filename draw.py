@@ -124,8 +124,8 @@ def _get_length(element: Sketcher.GeometryFacade) -> str:
     return _to_str(element.Geometry.length())
 
 
-def _to_str(x: float | int, n_digits: int = config.accuracy) -> str:
-    if n_digits > 0:
-        return f"{x: .{n_digits}f}"
+def _to_str(x: float | int, n_digits: Optional[int] = None) -> str:
+    if (n_digits or config.accuracy) > 0:
+        return f"{x: .{n_digits or config.accuracy}f}"
 
     return f"{x:g}"
