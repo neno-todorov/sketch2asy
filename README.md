@@ -10,9 +10,9 @@ Export [**FreeCAD**](https://www.freecadweb.org/) [Sketcher SketchObject](https:
 
 ## Example 
 
-|              FreeCAD sketch              |              Exported as *.asy               |               Modified *.asy file               |
-| :--------------------------------------: | :------------------------------------------: | :---------------------------------------------: |
 | ![FreeCAD sketch](./example/FreeCAD.png) | ![Exported as *.asy](./example/exported.png) | ![Modified *.asy file](./example/asymptote.png) |
+| :--------------------------------------: | :------------------------------------------: | :---------------------------------------------: |
+|              FreeCAD sketch              |              Exported as *.asy               |               Modified *.asy file               |
 
 ## Other
 

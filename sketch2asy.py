@@ -1,5 +1,7 @@
 """FreeCAD sketch to asymptote. Open this file with FreeCAD go to View > Panels > Report view to see the output"""
 
+import os
+import sys
 from datetime import datetime
 from typing import Dict
 
@@ -7,10 +9,6 @@ import FreeCAD as app
 import FreeCADGui as gui
 import Part
 import Sketcher
-
-import os
-import sys
-
 
 sys.path.append(os.path.dirname(__file__))
 
@@ -46,8 +44,16 @@ def draw_elements(element: Sketcher.GeometryFacade, pairs: Dict[str, str]) -> st
 def main() -> None:
     date = datetime.now().strftime("%Y-%m-%d - %H:%M:%S")
     preamble = (
-        f"\n// sketch2asy.py {config.version}\n// exported      "
-        f"{date}\nunitsize(1pt);\n"
+        f"\n// sketch2asy.py {config.version}\n// exported      {date}\n"
+        'texpreamble("\n'
+        "    \\usepackage[T2A]{fontenc}\n"
+        "    \\usepackage[utf8]{inputenc}\n"
+        "    \\usepackage[bulgarian]{babel}\n"
+        '");\n'
+        "unitsize(1pt);\n"
+        "defaultpen(fontsize(12pt));\n"
+        "arrowhead arh = HookHead();\n"
+        "real ars = 7pt;\n"
         f"pen {config.construction_pen_name} = {config.construction_pen_color};\n"
     )
 

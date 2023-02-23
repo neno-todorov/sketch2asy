@@ -125,6 +125,7 @@ def _get_length(element: Sketcher.GeometryFacade) -> str:
 
 
 def _to_str(x: float | int, n_digits: Optional[int] = None) -> str:
+    x = np.around(x, config.decimal_places_to_round)
     if (n_digits or config.accuracy) > 0:
         return f"{x: .{n_digits or config.accuracy}f}"
 
