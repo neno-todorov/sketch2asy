@@ -1,32 +1,20 @@
-import FreeCAD
-import numpy as np
-import numpy.typing as npt
-import Part
+"""Coordinate extraction utilities for FreeCAD geometry objects."""
+
+from __future__ import annotations
+
+from typing import Any
 
 
-def get_vector_xy(vec: FreeCAD.Vector) -> tuple[float, float]:
-    return vec.x, vec.y
-
-
-def get_point_xy(pnt: Part.Point) -> tuple[float, float]:
-    return pnt.X, pnt.Y
-
-
-def get_array_xy(pnt: npt.NDArray[np.float64]) -> tuple[float, float]:
-    return pnt[0], pnt[1]
-
-
-def get_coordinates(
-    pnt: FreeCAD.Vector | Part.Point | npt.NDArray[np.float64],
-) -> tuple[float, float]:
-    func_by_type = {
-        FreeCAD.Vector: get_vector_xy,
-        Part.Point: get_point_xy,
-        np.ndarray: get_array_xy,
-    }
-    func = func_by_type.get(type(pnt))
-
-    if func:
-        return func(pnt)
-
-    return 0, 0
+def get_coordinates(pnt: Any) -> tuple[float, float]:
+    """
+    Extracts (x, y) coordinates from FreeCAD Vectors, Points, tuples, or NumPy arrays.
+    Uses direct attribute inspection for maximum performance without creating temporary objects.
+    """
+    if hasattr(pnt, "x") and hasattr(pnt, "y"):
+        return float(pnt.x), float(pnt.y)
+    if hasattr(pnt, "X") and hasattr(pnt, "Y"):
+        return float(pnt.X), float(pnt.Y)
+    try:
+        return float(pnt[0]), float(pnt[1])
+    except (IndexError, TypeError, KeyError):
+        return 0.0, 0.0
