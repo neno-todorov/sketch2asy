@@ -1,4 +1,4 @@
-"""Coordinate extraction utilities for FreeCAD geometry objects."""
+"""Fast coordinate extraction for FreeCAD geometry elements."""
 
 from __future__ import annotations
 
@@ -6,10 +6,7 @@ from typing import Any
 
 
 def get_coordinates(pnt: Any) -> tuple[float, float]:
-    """
-    Extracts (x, y) coordinates from FreeCAD Vectors, Points, tuples, or NumPy arrays.
-    Uses direct attribute inspection for maximum performance without creating temporary objects.
-    """
+    """Extracts (x, y) coordinates from FreeCAD Vectors, Points, or tuples."""
     if hasattr(pnt, "x") and hasattr(pnt, "y"):
         return float(pnt.x), float(pnt.y)
     if hasattr(pnt, "X") and hasattr(pnt, "Y"):

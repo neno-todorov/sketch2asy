@@ -1,6 +1,6 @@
 # Other
 *.asy
-*.FCS*
+*.FC*
 *.pdf
 .idea/
 

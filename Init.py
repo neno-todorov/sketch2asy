@@ -1,0 +1,1 @@
+# FreeCAD init script of the sketch2asy module
