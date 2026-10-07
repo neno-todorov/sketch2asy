@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 try:
+    # pyrefly: ignore [missing-import]
     from PySide2 import QtWidgets
 except ImportError:
     try:
+        # pyrefly: ignore [missing-import]
         from PySide import QtWidgets
     except ImportError:
         from PySide6 import QtWidgets
