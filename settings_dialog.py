@@ -90,5 +90,6 @@ class SettingsDialog(QtWidgets.QDialog):
         cfg.skip_construction = self.cb_skip_const.isChecked()
         cfg.comment_construction = self.cb_comment_const.isChecked()
         cfg.show_internal_geometry = self.cb_internal.isChecked()
+        cfg.parametric_output = self.cb_parametric.isChecked()
         cfg.save()
         self.accept()

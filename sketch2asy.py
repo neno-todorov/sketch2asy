@@ -131,16 +131,23 @@ def export_sketch(sketch_obj: Any) -> None:
 
     pairs_dict: dict[str, str] = {}
     chainable_elements: list[dict[str, str | None]] = []
+    standalone_paths = ""
 
-    # 1. Build parametric model first to capture radius variables
+    # Check if user enabled parametric export
+    is_parametric = getattr(cfg, "parametric_output", True)
+
     model = None
     radius_params = {}
-    if getattr(cfg, "parametric_output", True):
-        model = ParametricModel(sketch_obj, pairs_dict)
-        radius_params = model.radius_params
+    if is_parametric:
+        try:
+            model = ParametricModel(sketch_obj, pairs_dict)
+            radius_params = model.radius_params
+        except Exception as e:  # noqa: BLE001
+            App.Console.PrintError(f"Parametric solver fallback: {e}\n")
+            model = None
+            radius_params = {}
 
-    # 2. Process geometry
-    standalone_paths = ""
+    # Process sketch geometry
     for geo_id, element in enumerate(sketch_obj.GeometryFacadeList):
         item = draw.extract_chainable_element(element, pairs_dict)
         if item:
@@ -150,15 +157,20 @@ def export_sketch(sketch_obj: Any) -> None:
                 element, pairs_dict, radius_params=radius_params, geo_id=geo_id
             )
 
-    # 3. Chain polylines
+    # Chain polylines
     chained_paths = ""
     chains = draw.chain_composite_elements(chainable_elements)
     for subpaths, is_closed, pen in chains:
         chained_paths += draw.format_compact_chain(subpaths, is_closed, pen)
 
-    # 4. Generate parameter and point block
-    if model:
-        define_section = model.format_asymptote_definitions()
+    # Generate point block and prune dead parameters
+    if is_parametric and model:
+        draw_section = (
+            "\n// --- Geometry Paths ---\n" + chained_paths + standalone_paths
+        )
+        define_section = model.format_asymptote_definitions(
+            paths_and_circles_str=draw_section
+        )
     else:
         define_section = "// --- Points & Coordinates ---\n"
         for coord_str, name in sorted(
@@ -166,21 +178,23 @@ def export_sketch(sketch_obj: Any) -> None:
             key=lambda i: int(i[1][1:]) if i[1][1:].isdigit() else 999999,
         ):
             define_section += f"pair {name} = {coord_str};\n"
+        draw_section = (
+            "\n// --- Geometry Paths ---\n" + chained_paths + standalone_paths
+        )
 
-    # 5. Dot labels
+    # Dot labels
     show_dots = ""
     if cfg.print_dot_labels:
         show_dots = "\n// --- Dots & Labels ---\n"
         for name in pairs_dict.values():
             show_dots += f'dot("${name}$", {name});\n'
 
-    # 6. Assemble output
+    # Preamble & Paths
     date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # noqa: DTZ005
     preamble = build_preamble(date_str)
     draw_section = "\n// --- Geometry Paths ---\n" + chained_paths + standalone_paths
 
     asy_output = f"{preamble}\n{define_section}{show_dots}\n{draw_section}"
-
     App.Console.PrintMessage(asy_output)
 
     # Save Dialog

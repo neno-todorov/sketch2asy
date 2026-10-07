@@ -1,4 +1,4 @@
-"""Configuration manager backed by FreeCAD's parameter system."""
+"""Basic configuration for sketch2asy."""
 
 from __future__ import annotations
 
@@ -10,13 +10,15 @@ PARAM_PATH = "User parameter:BaseApp/Preferences/Mod/sketch2asy"
 
 class Config:
     def __init__(self) -> None:
-        self.version: str = "2026-10-05"
+        self.version: str = "2026-10-07"
         self.accuracy: int = -1
         self.decimal_places_to_round: int = 6
         self.comments_indent: int = 30
-        self.unitsize: str = "1mm"  # Default 1mm for 1:1 CAD scale
+
+        self.unitsize: str = "1mm"
         self.construction_pen_name: str = "construction"
         self.construction_pen_color: str = "dashed + gray(0.5)"
+
         self.print_dot_labels: bool = False
         self.skip_construction: bool = False
         self.comment_construction: bool = False
@@ -25,7 +27,6 @@ class Config:
         self.load()
 
     def load(self) -> None:
-        """Loads preferences from FreeCAD user configuration."""
         try:
             p = App.ParamGet(PARAM_PATH)
             self.accuracy = p.GetInt("accuracy", self.accuracy)
@@ -46,11 +47,10 @@ class Config:
             self.parametric_output = p.GetBool(
                 "parametric_output", self.parametric_output
             )
-        except Exception as e:  # noqa: BLE001
-            print(e)
+        except Exception:  # noqa: BLE001, S110
+            pass
 
     def save(self) -> None:
-        """Saves current preferences to FreeCAD user configuration."""
         try:
             p = App.ParamGet(PARAM_PATH)
             p.SetInt("accuracy", self.accuracy)
@@ -61,8 +61,8 @@ class Config:
             p.SetBool("comment_construction", self.comment_construction)
             p.SetBool("show_internal_geometry", self.show_internal_geometry)
             p.SetBool("parametric_output", self.parametric_output)
-        except Exception as e:  # noqa: BLE001
-            print(e)
+        except Exception:  # noqa: BLE001, S110
+            pass
 
 
 cfg = Config()
