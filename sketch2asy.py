@@ -17,15 +17,17 @@ import FreeCAD as App
 import FreeCADGui as Gui
 
 try:
+    # pyrefly: ignore [missing-import]
     from PySide2 import QtWidgets
 except ImportError:
     try:
+        # pyrefly: ignore [missing-import]
         from PySide import QtWidgets
     except ImportError:
         from PySide6 import QtWidgets
 
-from config import cfg
 import draw
+from config import cfg
 
 try:
     from parametric import ParametricModel
