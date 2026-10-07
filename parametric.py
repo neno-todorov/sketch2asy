@@ -663,7 +663,7 @@ class ParametricModel:
                 else:
                     self.params[var_name] = draw._to_str(val, 2)
             else:
-                self.params[var_name] = draw._to_str(val)
+                self.params[var_name] = draw._to_str(val, 6)
 
             if c.Type == "Radius":
                 self.radius_params[c.First] = var_name
@@ -921,24 +921,41 @@ class ParametricModel:
             raise KeyError(f"No coordinates known for point {name}")
         return f"({draw._to_str(coords[0])}, {draw._to_str(coords[1])})"
 
+    def _point_dependencies(self, name: str) -> set[str]:
+        """Return named pair dependencies used by a point expression."""
+        return set(self.deps.get(name, set()))
+
+    @staticmethod
+    def _point_sort_key(name: str) -> tuple[int, str]:
+        """Sort P0, P1, ... numerically while remaining safe for other names."""
+        suffix = name[1:]
+        return (
+            int(suffix) if suffix.isdigit() else 999999,
+            name,
+        )
+
     def format_asymptote_definitions(self, paths_and_circles_str: str = "") -> str:
         out = ""
 
         # Always output all extracted sketch parameters when parametric mode is on
         if self.params or self.aux_params:
             out += "// --- Predefined Parameters ---\n"
-            for name, val in self.params.items():
-                out += f"real {name} = {val};\n"
-            for name, val in self.aux_params.items():
-                out += f"real {name} = {val};\n"
+
+            for name, value in self.params.items():
+                out += f"real {name} = {value};\n"
+
+            for name, value in self.aux_params.items():
+                out += f"real {name} = {value};\n"
+
             out += "\n"
 
         out += "// --- Points & Coordinates ---\n"
 
         inv_pairs = {name: coord for coord, name in self.pairs_dict.items()}
+
         sorted_names = sorted(
-            inv_pairs.keys(),
-            key=lambda item: int(item[1:]) if item[1:].isdigit() else 999999,
+            inv_pairs,
+            key=self._point_sort_key,
         )
 
         declared: set[str] = set()
@@ -946,93 +963,56 @@ class ParametricModel:
 
         while unresolved:
             progress = False
-            for i, name in enumerate(unresolved):
+
+            for name in list(unresolved):
                 coord_str = inv_pairs[name]
+
                 x_fallback, y_fallback = coord_str.strip("()").split(",")
-                x_fallback, y_fallback = x_fallback.strip(), y_fallback.strip()
+                x_fallback = x_fallback.strip()
+                y_fallback = y_fallback.strip()
 
                 rx = self.x_sets.find(name)
                 ry = self.y_sets.find(name)
-                both_cartesian = rx in self.x_formulas and ry in self.y_formulas
 
-                # Rule 1: Points with both Cartesian coordinates solved stay Cartesian
-                if both_cartesian and name not in self.custom_point_exprs:
-                    out += f"pair {name} = ({self.x_formulas[rx]}, {self.y_formulas[ry]});\n"
-                    declared.add(name)
-                    unresolved.pop(i)
-                    progress = True
-                    break
+                # Do not emit a point until its symbolic pair dependencies
+                # have already been declared.
+                deps = self._point_dependencies(name)
 
-                # Rule 2: Custom vector / intersection expressions
+                if deps and not deps.issubset(declared):
+                    continue
+
                 if name in self.custom_point_exprs:
-                    deps = self.deps.get(name, set())
-                    if deps.issubset(declared):
-                        out += f"pair {name} = {self.custom_point_exprs[name]};\n"
-                        declared.add(name)
-                        unresolved.pop(i)
-                        progress = True
-                        break
-
-                # Rule 3: Partially solved Cartesian
-                elif name not in self.custom_point_exprs and (
-                    rx in self.x_formulas or ry in self.y_formulas
-                ):
+                    expr = self.custom_point_exprs[name]
+                else:
                     x_expr = self.x_formulas.get(rx, x_fallback)
                     y_expr = self.y_formulas.get(ry, y_fallback)
-                    out += f"pair {name} = ({x_expr}, {y_expr});\n"
-                    declared.add(name)
-                    unresolved.pop(i)
-                    progress = True
-                    break
+                    expr = f"({x_expr}, {y_expr})"
 
-                # Rule 4: No constraints resolved - emit as-is
-                elif name not in self.custom_point_exprs:
-                    out += "// --- Points & Coordinates ---\n"
-                    inv_pairs = {name: coord for coord, name in self.pairs_dict.items()}
-                    sorted_names = sorted(
-                        inv_pairs.keys(),
-                        key=lambda item: (
-                            int(item[1:]) if item[1:].isdigit() else 999999
-                        ),
-                    )
+                out += f"pair {name} = {expr};\n"
 
-                    declared: set[str] = set()
-                    unresolved = list(sorted_names)
-
-                    while unresolved:
-                        progress = False
-
-                        for name in list(unresolved):
-                            deps = self.deps.get(name, set())
-
-                            # Do not emit an expression until the points it references
-                            # have already been declared.
-                            if not deps.issubset(declared):
-                                continue
-
-                            expr = self.point_expression(name)
-
-                            out += f"pair {name} = {expr};\n"
-                            declared.add(name)
-                            unresolved.remove(name)
-                            progress = True
-
-                        if not progress:
-                            # There is a cyclic or otherwise unresolved dependency.
-                            # Do not silently turn it into a frozen coordinate.
-                            name = unresolved.pop(0)
-                            expr = self._fallback_point(name)
-
-                            out += (
-                                f"// WARNING: unresolved symbolic dependencies for {name}\n"
-                                f"pair {name} = {expr};\n"
-                            )
-                            declared.add(name)
-
-            if not progress and unresolved:
-                name = unresolved.pop(0)
-                coord_str = inv_pairs[name]
-                out += f"pair {name} = {coord_str};\n"
                 declared.add(name)
+                unresolved.remove(name)
+                progress = True
+
+            if progress:
+                continue
+
+            # We have a dependency cycle or some other unresolved symbolic
+            # dependency. Do not restart the whole point-generation process.
+            name = unresolved.pop(0)
+
+            expr = self.point_expression(name)
+
+            out += (
+                f"// WARNING: unresolved symbolic dependencies for {name}\n"
+                f"// Parametric fallback to current FreeCAD coordinates.\n"
+                f"pair {name} = {expr};\n"
+            )
+
+            declared.add(name)
+
+        if paths_and_circles_str:
+            out += "\n"
+            out += paths_and_circles_str
 
         return out
