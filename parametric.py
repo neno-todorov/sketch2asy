@@ -128,12 +128,12 @@ class ParametricModel:
                 "Angle",
             ):
                 prefix = {
-                    "DistanceX": "dx",
-                    "DistanceY": "dy",
+                    "DistanceX": "Dx",
+                    "DistanceY": "Dy",
                     "Distance": "L",
                     "Radius": "R",
                     "Diameter": "D",
-                    "Angle": "ang",
+                    "Angle": "A",
                 }.get(con_type, "p")
 
                 val = (
