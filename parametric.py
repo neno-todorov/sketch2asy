@@ -559,6 +559,7 @@ class ParametricModel:
     def __init__(self, sketch_obj: Any, pairs_dict: dict[str, str]) -> None:
         self.sketch = sketch_obj
         self.pairs_dict = pairs_dict
+        self.aux_params: dict[str, str] = {}
 
         # Disjoint sets for Equal constraints
         self.length_sets = DisjointSet()
@@ -570,6 +571,9 @@ class ParametricModel:
         self.constraint_vars: dict[int, str] = {}
         self.params: dict[str, str] = {}
         self.radius_params: dict[int, str] = {}
+
+        self.fixed_x: set[str] = set()
+        self.fixed_y: set[str] = set()
 
         self.x_sets = DisjointSet()
         self.y_sets = DisjointSet()
@@ -593,6 +597,24 @@ class ParametricModel:
         self._build_vertex_map()
         self._extract_parameters()
         self._solve_geometry()
+
+    @staticmethod
+    def _geom_is_horizontal(geom: Any) -> bool:
+        """Returns True if geometry is a horizontal line segment."""
+        if not (hasattr(geom, "StartPoint") and hasattr(geom, "EndPoint")):
+            return False
+        ps = get_coordinates(geom.StartPoint)
+        pe = get_coordinates(geom.EndPoint)
+        return abs(ps[1] - pe[1]) < 1e-4
+
+    @staticmethod
+    def _geom_is_vertical(geom: Any) -> bool:
+        """Returns True if geometry is a vertical line segment."""
+        if not (hasattr(geom, "StartPoint") and hasattr(geom, "EndPoint")):
+            return False
+        ps = get_coordinates(geom.StartPoint)
+        pe = get_coordinates(geom.EndPoint)
+        return abs(ps[0] - pe[0]) < 1e-4
 
     def _build_vertex_map(self) -> None:
         for geo_id, geom in enumerate(self.sketch.Geometry):
@@ -850,85 +872,167 @@ class ParametricModel:
                     self.custom_point_exprs[target] = f"({x_expr}, {y_expr})"
                     self.deps.setdefault(target, set()).add(base)
 
+    def _coordinate_expr(
+        self,
+        point: str,
+        axis: str,
+    ) -> str | None:
+        if axis == "x":
+            root = self.x_sets.find(point)
+            return self.x_formulas.get(root)
 
-def format_asymptote_definitions(self, paths_and_circles_str: str = "") -> str:
-    out = ""
+        root = self.y_sets.find(point)
+        return self.y_formulas.get(root)
 
-    # Always output all extracted sketch parameters when parametric mode is on
-    if self.params or self.aux_params:
-        out += "// --- Predefined Parameters ---\n"
-        for name, val in self.params.items():
-            out += f"real {name} = {val};\n"
-        for name, val in self.aux_params.items():
-            out += f"real {name} = {val};\n"
-        out += "\n"
+    def point_expression(self, name: str) -> str:
+        """Return the best symbolic Asymptote expression for a point.
 
-    out += "// --- Points & Coordinates ---\n"
+        The returned expression may reference other named pair variables.
+        Numeric FreeCAD coordinates are only used as a last-resort fallback.
+        """
+        if name in self.custom_point_exprs:
+            return self.custom_point_exprs[name]
 
-    inv_pairs = {name: coord for coord, name in self.pairs_dict.items()}
-    sorted_names = sorted(
-        inv_pairs.keys(),
-        key=lambda item: int(item[1:]) if item[1:].isdigit() else 999999,
-    )
+        rx = self.x_sets.find(name)
+        ry = self.y_sets.find(name)
 
-    declared: set[str] = set()
-    unresolved = list(sorted_names)
+        x_expr = self.x_formulas.get(rx)
+        y_expr = self.y_formulas.get(ry)
 
-    while unresolved:
-        progress = False
-        for i, name in enumerate(unresolved):
-            coord_str = inv_pairs[name]
-            x_fallback, y_fallback = coord_str.strip("()").split(",")
-            x_fallback, y_fallback = x_fallback.strip(), y_fallback.strip()
+        if x_expr is not None and y_expr is not None:
+            return f"({x_expr}, {y_expr})"
 
-            rx = self.x_sets.find(name)
-            ry = self.y_sets.find(name)
-            both_cartesian = rx in self.x_formulas and ry in self.y_formulas
+        if x_expr is not None or y_expr is not None:
+            x = x_expr if x_expr is not None else self._fallback_coordinate(name, 0)
+            y = y_expr if y_expr is not None else self._fallback_coordinate(name, 1)
+            return f"({x}, {y})"
 
-            # Rule 1: Points with both Cartesian coordinates solved stay Cartesian
-            if both_cartesian and name not in self.custom_point_exprs:
-                out += (
-                    f"pair {name} = ({self.x_formulas[rx]}, {self.y_formulas[ry]});\n"
-                )
-                declared.add(name)
-                unresolved.pop(i)
-                progress = True
-                break
+        return self._fallback_point(name)
 
-            # Rule 2: Custom vector / intersection expressions
-            if name in self.custom_point_exprs:
-                deps = self.deps.get(name, set())
-                if deps.issubset(declared):
-                    out += f"pair {name} = {self.custom_point_exprs[name]};\n"
+    def _fallback_coordinate(self, name: str, index: int) -> str:
+        coords = self.point_coords.get(name)
+        if coords is None:
+            raise KeyError(f"No coordinates known for point {name}")
+        return draw._to_str(coords[index])
+
+    def _fallback_point(self, name: str) -> str:
+        coords = self.point_coords.get(name)
+        if coords is None:
+            raise KeyError(f"No coordinates known for point {name}")
+        return f"({draw._to_str(coords[0])}, {draw._to_str(coords[1])})"
+
+    def format_asymptote_definitions(self, paths_and_circles_str: str = "") -> str:
+        out = ""
+
+        # Always output all extracted sketch parameters when parametric mode is on
+        if self.params or self.aux_params:
+            out += "// --- Predefined Parameters ---\n"
+            for name, val in self.params.items():
+                out += f"real {name} = {val};\n"
+            for name, val in self.aux_params.items():
+                out += f"real {name} = {val};\n"
+            out += "\n"
+
+        out += "// --- Points & Coordinates ---\n"
+
+        inv_pairs = {name: coord for coord, name in self.pairs_dict.items()}
+        sorted_names = sorted(
+            inv_pairs.keys(),
+            key=lambda item: int(item[1:]) if item[1:].isdigit() else 999999,
+        )
+
+        declared: set[str] = set()
+        unresolved = list(sorted_names)
+
+        while unresolved:
+            progress = False
+            for i, name in enumerate(unresolved):
+                coord_str = inv_pairs[name]
+                x_fallback, y_fallback = coord_str.strip("()").split(",")
+                x_fallback, y_fallback = x_fallback.strip(), y_fallback.strip()
+
+                rx = self.x_sets.find(name)
+                ry = self.y_sets.find(name)
+                both_cartesian = rx in self.x_formulas and ry in self.y_formulas
+
+                # Rule 1: Points with both Cartesian coordinates solved stay Cartesian
+                if both_cartesian and name not in self.custom_point_exprs:
+                    out += f"pair {name} = ({self.x_formulas[rx]}, {self.y_formulas[ry]});\n"
                     declared.add(name)
                     unresolved.pop(i)
                     progress = True
                     break
 
-            # Rule 3: Partially solved Cartesian
-            elif name not in self.custom_point_exprs and (
-                rx in self.x_formulas or ry in self.y_formulas
-            ):
-                x_expr = self.x_formulas.get(rx, x_fallback)
-                y_expr = self.y_formulas.get(ry, y_fallback)
-                out += f"pair {name} = ({x_expr}, {y_expr});\n"
-                declared.add(name)
-                unresolved.pop(i)
-                progress = True
-                break
+                # Rule 2: Custom vector / intersection expressions
+                if name in self.custom_point_exprs:
+                    deps = self.deps.get(name, set())
+                    if deps.issubset(declared):
+                        out += f"pair {name} = {self.custom_point_exprs[name]};\n"
+                        declared.add(name)
+                        unresolved.pop(i)
+                        progress = True
+                        break
 
-            # Rule 4: No constraints resolved - emit as-is
-            elif name not in self.custom_point_exprs:
+                # Rule 3: Partially solved Cartesian
+                elif name not in self.custom_point_exprs and (
+                    rx in self.x_formulas or ry in self.y_formulas
+                ):
+                    x_expr = self.x_formulas.get(rx, x_fallback)
+                    y_expr = self.y_formulas.get(ry, y_fallback)
+                    out += f"pair {name} = ({x_expr}, {y_expr});\n"
+                    declared.add(name)
+                    unresolved.pop(i)
+                    progress = True
+                    break
+
+                # Rule 4: No constraints resolved - emit as-is
+                elif name not in self.custom_point_exprs:
+                    out += "// --- Points & Coordinates ---\n"
+                    inv_pairs = {name: coord for coord, name in self.pairs_dict.items()}
+                    sorted_names = sorted(
+                        inv_pairs.keys(),
+                        key=lambda item: (
+                            int(item[1:]) if item[1:].isdigit() else 999999
+                        ),
+                    )
+
+                    declared: set[str] = set()
+                    unresolved = list(sorted_names)
+
+                    while unresolved:
+                        progress = False
+
+                        for name in list(unresolved):
+                            deps = self.deps.get(name, set())
+
+                            # Do not emit an expression until the points it references
+                            # have already been declared.
+                            if not deps.issubset(declared):
+                                continue
+
+                            expr = self.point_expression(name)
+
+                            out += f"pair {name} = {expr};\n"
+                            declared.add(name)
+                            unresolved.remove(name)
+                            progress = True
+
+                        if not progress:
+                            # There is a cyclic or otherwise unresolved dependency.
+                            # Do not silently turn it into a frozen coordinate.
+                            name = unresolved.pop(0)
+                            expr = self._fallback_point(name)
+
+                            out += (
+                                f"// WARNING: unresolved symbolic dependencies for {name}\n"
+                                f"pair {name} = {expr};\n"
+                            )
+                            declared.add(name)
+
+            if not progress and unresolved:
+                name = unresolved.pop(0)
+                coord_str = inv_pairs[name]
                 out += f"pair {name} = {coord_str};\n"
                 declared.add(name)
-                unresolved.pop(i)
-                progress = True
-                break
 
-        if not progress and unresolved:
-            name = unresolved.pop(0)
-            coord_str = inv_pairs[name]
-            out += f"pair {name} = {coord_str};\n"
-            declared.add(name)
-
-    return out
+        return out
