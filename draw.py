@@ -6,6 +6,7 @@ import math
 from typing import Any
 
 try:
+    # pyrefly: ignore [missing-import]
     from FreeCAD import Sketcher
 except ImportError:
     Sketcher = None

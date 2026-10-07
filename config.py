@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 try:
+    # pyrefly: ignore [missing-import]
     import FreeCAD as App
 except ImportError:
     App = None
