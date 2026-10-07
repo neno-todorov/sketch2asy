@@ -6,11 +6,18 @@ from typing import Any
 
 
 def get_coordinates(pnt: Any) -> tuple[float, float]:
-    """Extracts (x, y) coordinates from FreeCAD Vectors, Points, or tuples."""
+    """Extracts (x, y) coordinates from FreeCAD Vectors, Points, Vertices, or tuples."""
+    if pnt is None:
+        return 0.0, 0.0
+
+    if hasattr(pnt, "Point"):
+        pnt = pnt.Point
+
     if hasattr(pnt, "x") and hasattr(pnt, "y"):
         return float(pnt.x), float(pnt.y)
     if hasattr(pnt, "X") and hasattr(pnt, "Y"):
         return float(pnt.X), float(pnt.Y)
+
     try:
         return float(pnt[0]), float(pnt[1])
     except (IndexError, TypeError, KeyError):

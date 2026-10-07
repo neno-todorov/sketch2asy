@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-# pyrefly: ignore [missing-import]
-import FreeCAD as App
+try:
+    import FreeCAD as App
+except ImportError:
+    App = None
 
 PARAM_PATH = "User parameter:BaseApp/Preferences/Mod/sketch2asy"
 
@@ -27,6 +29,8 @@ class Config:
         self.load()
 
     def load(self) -> None:
+        if App is None:
+            return
         try:
             p = App.ParamGet(PARAM_PATH)
             self.accuracy = p.GetInt("accuracy", self.accuracy)
@@ -51,6 +55,8 @@ class Config:
             pass
 
     def save(self) -> None:
+        if App is None:
+            return
         try:
             p = App.ParamGet(PARAM_PATH)
             p.SetInt("accuracy", self.accuracy)

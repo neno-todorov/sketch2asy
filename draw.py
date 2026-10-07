@@ -5,8 +5,10 @@ from __future__ import annotations
 import math
 from typing import Any
 
-# pyrefly: ignore [missing-import]
-from FreeCAD import Sketcher
+try:
+    from FreeCAD import Sketcher
+except ImportError:
+    Sketcher = None
 
 from config import cfg
 from coordinates import get_coordinates
@@ -55,15 +57,16 @@ def _pair(pnt: Any, pairs: dict[str, str] | None = None) -> str:
     return p
 
 
-def _get_pen(element: Sketcher.GeometryFacade) -> str | None:
-    if element.Construction:
+def _get_pen(element: Any) -> str | None:
+    if getattr(element, "Construction", False):
         return cfg.construction_pen_name
     return None
 
 
-def _get_length(element: Sketcher.GeometryFacade) -> str:
+def _get_length(element: Any) -> str:
     try:
-        return f"len = {_to_str(element.Geometry.length(), 2)}"
+        geom = getattr(element, "Geometry", element)
+        return f"len = {_to_str(geom.length(), 2)}"
     except Exception:  # noqa: BLE001
         return ""
 
@@ -87,8 +90,10 @@ def _is_ccw(start: Any, mid: Any, center: Any) -> bool:
     return ((sx - cx) * (my - cy) - (sy - cy) * (mx - cx)) > 0
 
 
-def _should_skip_element(element: Sketcher.GeometryFacade) -> bool:
-    if getattr(cfg, "skip_construction", False) and element.Construction:
+def _should_skip_element(element: Any) -> bool:
+    if getattr(cfg, "skip_construction", False) and getattr(
+        element, "Construction", False
+    ):
         return True
     if not getattr(cfg, "show_internal_geometry", True):
         int_type = getattr(element, "InternalType", 0)
@@ -111,11 +116,6 @@ def _bspline_to_bezier_path(geom: Any, pairs: dict[str, str]) -> str:
         except ValueError:
             pass
     return path
-
-
-# ----------------------------------------------------------------------
-# Conic Formatters
-# ----------------------------------------------------------------------
 
 
 def format_ellipse_arc(geom: Any, pairs: dict[str, str]) -> str:
@@ -144,7 +144,12 @@ def format_hyperbola_arc(geom: Any, pairs: dict[str, str]) -> str:
     c = _pair(c_pnt, pairs)
     a = _to_str(geom.MajorRadius)
     b = _to_str(geom.MinorRadius)
-    rot = _to_str(math.degrees(geom.AngleXU))
+    rot_angle = (
+        geom.AngleXU
+        if hasattr(geom, "AngleXU")
+        else math.atan2(geom.XAxis.y, geom.XAxis.x)
+    )
+    rot = _to_str(math.degrees(rot_angle))
     p0 = _pair(geom.StartPoint, pairs)
     p1 = _pair(geom.EndPoint, pairs)
 
@@ -170,23 +175,20 @@ def format_parabola_arc(geom: Any, pairs: dict[str, str]) -> str:
     return f"arc_parabola({f}, {v}, {p0}, {p1}, {ccw})"
 
 
-# ----------------------------------------------------------------------
-# Standalone Elements
-# ----------------------------------------------------------------------
-
-
-def draw_line_segment(element: Sketcher.GeometryFacade, pairs: dict[str, str]) -> str:
+def draw_line_segment(element: Any, pairs: dict[str, str]) -> str:
     pen = _get_pen(element)
-    p0 = _pair(element.Geometry.StartPoint, pairs)
-    p1 = _pair(element.Geometry.EndPoint, pairs)
+    geom = getattr(element, "Geometry", element)
+    p0 = _pair(geom.StartPoint, pairs)
+    p1 = _pair(geom.EndPoint, pairs)
     return _draw(f"{p0} -- {p1}", pen=pen, comment=_get_length(element))
 
 
-def draw_point(element: Sketcher.GeometryFacade, pairs: dict[str, str]) -> str:
+def draw_point(element: Any, pairs: dict[str, str]) -> str:
     if _should_skip_element(element):
         return ""
     pen = _get_pen(element)
-    pnt = _pair(element.Geometry, pairs)
+    geom = getattr(element, "Geometry", element)
+    pnt = _pair(geom, pairs)
     line = f"dot({pnt}, {pen});" if pen is not None else f"dot({pnt});"
     if cfg.comment_construction and pen == cfg.construction_pen_name:
         return f"// {line}\n"
@@ -194,26 +196,27 @@ def draw_point(element: Sketcher.GeometryFacade, pairs: dict[str, str]) -> str:
 
 
 def draw_circle(
-    element: Sketcher.GeometryFacade,
+    element: Any,
     pairs: dict[str, str],
     radius_param: str | None = None,
 ) -> str:
     pen = _get_pen(element)
-    c = _pair(element.Geometry.Location, pairs)
-    # Use parametric radius if available, otherwise numeric fallback
-    r = radius_param if radius_param else _to_str(element.Geometry.Radius)
+    geom = getattr(element, "Geometry", element)
+    c = _pair(geom.Location, pairs)
+    r = radius_param if radius_param else _to_str(geom.Radius)
     return _draw(f"circle({c}, {r})", pen=pen, comment=_get_length(element))
 
 
-def draw_ellipse(element: Sketcher.GeometryFacade, pairs: dict[str, str]) -> str:
+def draw_ellipse(element: Any, pairs: dict[str, str]) -> str:
     pen = _get_pen(element)
-    c = _pair(element.Geometry.Location, pairs)
-    a = _to_str(element.Geometry.MajorRadius)
-    b = _to_str(element.Geometry.MinorRadius)
+    geom = getattr(element, "Geometry", element)
+    c = _pair(geom.Location, pairs)
+    a = _to_str(geom.MajorRadius)
+    b = _to_str(geom.MinorRadius)
     rot_angle = (
-        element.Geometry.AngleXU
-        if hasattr(element.Geometry, "AngleXU")
-        else math.atan2(element.Geometry.XAxis.y, element.Geometry.XAxis.x)
+        geom.AngleXU
+        if hasattr(geom, "AngleXU")
+        else math.atan2(geom.XAxis.y, geom.XAxis.x)
     )
     rot = _to_str(math.degrees(rot_angle))
     return _draw(
@@ -223,58 +226,57 @@ def draw_ellipse(element: Sketcher.GeometryFacade, pairs: dict[str, str]) -> str
     )
 
 
-def draw_arc_of_circle(element: Sketcher.GeometryFacade, pairs: dict[str, str]) -> str:
+def draw_arc_of_circle(element: Any, pairs: dict[str, str]) -> str:
     pen = _get_pen(element)
-    c = _pair(element.Geometry.Location, pairs)
-    p0 = _pair(element.Geometry.StartPoint, pairs)
-    p1 = _pair(element.Geometry.EndPoint, pairs)
+    geom = getattr(element, "Geometry", element)
+    c = _pair(geom.Location, pairs)
+    p0 = _pair(geom.StartPoint, pairs)
+    p1 = _pair(geom.EndPoint, pairs)
     return _draw(f"arc({c}, {p0}, {p1})", pen=pen, comment=_get_length(element))
 
 
-def draw_arc_of_ellipse(element: Sketcher.GeometryFacade, pairs: dict[str, str]) -> str:
+def draw_arc_of_ellipse(element: Any, pairs: dict[str, str]) -> str:
     pen = _get_pen(element)
+    geom = getattr(element, "Geometry", element)
     return _draw(
-        format_ellipse_arc(element.Geometry, pairs),
+        format_ellipse_arc(geom, pairs),
         pen=pen,
         comment=_get_length(element),
     )
 
 
-def draw_arc_of_parabola(
-    element: Sketcher.GeometryFacade, pairs: dict[str, str]
-) -> str:
+def draw_arc_of_parabola(element: Any, pairs: dict[str, str]) -> str:
     pen = _get_pen(element)
+    geom = getattr(element, "Geometry", element)
     return _draw(
-        format_parabola_arc(element.Geometry, pairs),
+        format_parabola_arc(geom, pairs),
         pen=pen,
         comment=_get_length(element),
     )
 
 
-def draw_arc_of_hyperbola(
-    element: Sketcher.GeometryFacade, pairs: dict[str, str]
-) -> str:
+def draw_arc_of_hyperbola(element: Any, pairs: dict[str, str]) -> str:
     pen = _get_pen(element)
+    geom = getattr(element, "Geometry", element)
     return _draw(
-        format_hyperbola_arc(element.Geometry, pairs),
+        format_hyperbola_arc(geom, pairs),
         pen=pen,
         comment=_get_length(element),
     )
 
 
-def draw_b_spline_to_bezier(
-    element: Sketcher.GeometryFacade, pairs: dict[str, str]
-) -> str:
+def draw_b_spline_to_bezier(element: Any, pairs: dict[str, str]) -> str:
     pen = _get_pen(element)
+    geom = getattr(element, "Geometry", element)
     return _draw(
-        _bspline_to_bezier_path(element.Geometry, pairs),
+        _bspline_to_bezier_path(geom, pairs),
         pen=pen,
         comment=_get_length(element),
     )
 
 
 def draw_elements(
-    element: Sketcher.GeometryFacade,
+    element: Any,
     pairs: dict[str, str],
     radius_params: dict[int, str] | None = None,
     geo_id: int | None = None,
@@ -282,9 +284,9 @@ def draw_elements(
     if _should_skip_element(element):
         return ""
 
-    geom_name = type(element.Geometry).__name__.replace("Geom", "")
+    geom = getattr(element, "Geometry", element)
+    geom_name = type(geom).__name__.replace("Geom", "")
 
-    # Look up radius parameter for circles
     rad_param = (
         radius_params.get(geo_id) if (radius_params and geo_id is not None) else None
     )
@@ -309,18 +311,13 @@ def draw_elements(
     return f"// {geom_name} is not implemented yet.\n"
 
 
-# ----------------------------------------------------------------------
-# Chaining Routines
-# ----------------------------------------------------------------------
-
-
 def extract_chainable_element(
-    element: Sketcher.GeometryFacade, pairs: dict[str, str]
+    element: Any, pairs: dict[str, str]
 ) -> dict[str, str | None] | None:
     if _should_skip_element(element):
         return None
 
-    geom = element.Geometry
+    geom = getattr(element, "Geometry", element)
     pen = _get_pen(element)
     geom_name = type(geom).__name__.replace("Geom", "")
 

@@ -1,13 +1,11 @@
-"""GUI Settings Dialog for sketch2asy."""
+"""Settings Dialog for sketch2asy."""
 
 from __future__ import annotations
 
 try:
-    # pyrefly: ignore [missing-import]
     from PySide2 import QtWidgets
 except ImportError:
     try:
-        # pyrefly: ignore [missing-import]
         from PySide import QtWidgets
     except ImportError:
         from PySide6 import QtWidgets
@@ -16,80 +14,71 @@ from config import cfg
 
 
 class SettingsDialog(QtWidgets.QDialog):
+    """Configuration dialog for sketch2asy export options."""
+
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Export Asymptote - Settings")
-        self.resize(360, 280)
+        self.setWindowTitle("sketch2asy Settings")
+        self.resize(360, 320)
         self._init_ui()
 
     def _init_ui(self) -> None:
         layout = QtWidgets.QVBoxLayout(self)
-
         form = QtWidgets.QFormLayout()
 
-        # Unitsize
-        self.unit_edit = QtWidgets.QLineEdit(cfg.unitsize)
-        form.addRow("Unit size (e.g. 1mm, 1pt):", self.unit_edit)
-
-        # Accuracy
-        self.acc_spin = QtWidgets.QSpinBox()
-        self.acc_spin.setRange(-1, 10)
-        self.acc_spin.setValue(cfg.accuracy)
-        self.acc_spin.setSpecialValueText("Auto (-1)")
-        form.addRow("Decimal places:", self.acc_spin)
-
-        # Construction pen color/style
-        self.pen_edit = QtWidgets.QLineEdit(cfg.construction_pen_color)
-        form.addRow("Construction pen:", self.pen_edit)
-
-        # Checkboxes
-        self.cb_dots = QtWidgets.QCheckBox("Show point dots and labels ($P0$, $P1$)")
-        self.cb_dots.setChecked(cfg.print_dot_labels)
-
-        self.cb_skip_const = QtWidgets.QCheckBox("Skip construction geometry")
-        self.cb_skip_const.setChecked(cfg.skip_construction)
-
-        self.cb_comment_const = QtWidgets.QCheckBox("Comment out construction geometry")
-        self.cb_comment_const.setChecked(cfg.comment_construction)
-
-        self.cb_internal = QtWidgets.QCheckBox(
-            "Show internal solver geometry (axes, hulls)"
+        self.spin_accuracy = QtWidgets.QSpinBox()
+        self.spin_accuracy.setRange(-1, 12)
+        self.spin_accuracy.setValue(cfg.accuracy)
+        self.spin_accuracy.setToolTip(
+            "-1 for auto (:g format), >= 0 for fixed precision"
         )
-        self.cb_internal.setChecked(cfg.show_internal_geometry)
+        form.addRow("Accuracy:", self.spin_accuracy)
 
-        self.cb_parametric = QtWidgets.QCheckBox(
-            "Generate parametric variables and relations (experimental - may fail on complex sketches)"
+        self.edit_unitsize = QtWidgets.QLineEdit(cfg.unitsize)
+        form.addRow("Unit size:", self.edit_unitsize)
+
+        self.edit_pen_color = QtWidgets.QLineEdit(cfg.construction_pen_color)
+        form.addRow("Construction pen:", self.edit_pen_color)
+
+        self.chk_parametric = QtWidgets.QCheckBox("Enable Parametric Output (SymPy)")
+        self.chk_parametric.setChecked(cfg.parametric_output)
+        form.addRow(self.chk_parametric)
+
+        self.chk_dot_labels = QtWidgets.QCheckBox("Print Dot Labels")
+        self.chk_dot_labels.setChecked(cfg.print_dot_labels)
+        form.addRow(self.chk_dot_labels)
+
+        self.chk_skip_construction = QtWidgets.QCheckBox("Skip Construction Lines")
+        self.chk_skip_construction.setChecked(cfg.skip_construction)
+        form.addRow(self.chk_skip_construction)
+
+        self.chk_comment_construction = QtWidgets.QCheckBox(
+            "Comment Out Construction Lines"
         )
-        self.cb_parametric.setChecked(cfg.parametric_output)
+        self.chk_comment_construction.setChecked(cfg.comment_construction)
+        form.addRow(self.chk_comment_construction)
+
+        self.chk_show_internal = QtWidgets.QCheckBox("Show Internal Geometry")
+        self.chk_show_internal.setChecked(cfg.show_internal_geometry)
+        form.addRow(self.chk_show_internal)
 
         layout.addLayout(form)
-        layout.addWidget(self.cb_dots)
-        layout.addWidget(self.cb_skip_const)
-        layout.addWidget(self.cb_comment_const)
-        layout.addWidget(self.cb_internal)
-        layout.addWidget(self.cb_parametric)
 
-        layout.addStretch()
-
-        # Action Buttons
-        btn_box = QtWidgets.QDialogButtonBox(
+        buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         )
-        btn_box.button(QtWidgets.QDialogButtonBox.Ok).setText("Export...")
-        btn_box.accepted.connect(self._save_and_accept)
-        btn_box.rejected.connect(self.reject)
-        layout.addWidget(btn_box)
+        buttons.accepted.connect(self._save_and_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
 
     def _save_and_accept(self) -> None:
-        cfg.unitsize = self.unit_edit.text().strip() or "1mm"
-        cfg.accuracy = self.acc_spin.value()
-        cfg.construction_pen_color = (
-            self.pen_edit.text().strip() or "dashed + gray(0.5)"
-        )
-        cfg.print_dot_labels = self.cb_dots.isChecked()
-        cfg.skip_construction = self.cb_skip_const.isChecked()
-        cfg.comment_construction = self.cb_comment_const.isChecked()
-        cfg.show_internal_geometry = self.cb_internal.isChecked()
-        cfg.parametric_output = self.cb_parametric.isChecked()
+        cfg.accuracy = self.spin_accuracy.value()
+        cfg.unitsize = self.edit_unitsize.text()
+        cfg.construction_pen_color = self.edit_pen_color.text()
+        cfg.parametric_output = self.chk_parametric.isChecked()
+        cfg.print_dot_labels = self.chk_dot_labels.isChecked()
+        cfg.skip_construction = self.chk_skip_construction.isChecked()
+        cfg.comment_construction = self.chk_comment_construction.isChecked()
+        cfg.show_internal_geometry = self.chk_show_internal.isChecked()
         cfg.save()
         self.accept()

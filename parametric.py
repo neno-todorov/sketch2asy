@@ -1,1018 +1,334 @@
-"""Modular SymPy-powered constraint solver with FreeCAD branch selection."""
+"""SymPy-based symbolic constraint solver for FreeCAD sketches to Asymptote."""
 
 from __future__ import annotations
 
 import math
 import re
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-import sympy as sp
-
-import draw
+import sympy
 from coordinates import get_coordinates
-
-if TYPE_CHECKING:
-    # pyrefly: ignore [missing-import]
-    import Sketcher  # noqa: F401
-
-_GEO_NONE = -2000
-_XAXIS_ID = -1
-_YAXIS_ID = -2
-
-DIM_TYPES: tuple[str, ...] = (
-    "Distance",
-    "DistanceX",
-    "DistanceY",
-    "Radius",
-    "Diameter",
-    "Angle",
-)
-
-
-# FreeCAD C++ constant for unassigned geometry (Sketcher::GeoEnum::GeoUndef = -2000)
-def _is_geo_none(geo_id: int | None) -> bool:
-    """
-    Returns True if geo_id represents 'no geometry' (GeoUndef / None).
-
-    FreeCAD Geometry ID Mapping:
-      - geo_id >= 0:  Normal sketch geometry (lines, circles, arcs)
-      - geo_id == -1: Horizontal sketch axis (X-axis, y = 0)
-      - geo_id == -2: Vertical sketch axis (Y-axis, x = 0)
-      - geo_id in [-3 .. -1999]: External reference geometry linked from other 3D bodies
-      - geo_id <= -2000 or None: Unassigned / GeoUndef (no second/third geometry)
-    """
-    if geo_id is None:
-        return True
-    return geo_id <= _GEO_NONE
-
-
-def sanitize_name(name: str) -> str:
-    clean = re.sub(r"[^a-zA-Z0-9_]", "_", name.strip())
-    if not clean or clean[0].isdigit():
-        clean = f"param_{clean}"
-    return clean
-
-
-def sympy_to_asy(expr: sp.Expr) -> str:
-    """Formats SymPy expressions cleanly for Asymptote."""
-    s = str(sp.simplify(expr))
-    s = re.sub(r"([a-zA-Z0-9_]+)\*\*2", r"(\1)^2", s)
-    s = re.sub(r"\((.*?)\)\*\*2", r"((\1))^2", s)
-    s = s.replace("**", "^")
-    s = re.sub(r"(P\d+)_x", r"\1.x", s)
-    s = re.sub(r"(P\d+)_y", r"\1.y", s)
-    return s
-
-
-# ======================================================================
-# Solver Context & Disjoint Set
-# ======================================================================
-
-
-class DisjointSet:
-    def __init__(self) -> None:
-        self.parent: dict[str, str] = {}
-
-    def find(self, item: str) -> str:
-        if item not in self.parent:
-            self.parent[item] = item
-        if self.parent[item] != item:
-            self.parent[item] = self.find(self.parent[item])
-        return self.parent[item]
-
-    def union(self, a: str, b: str, formulas: dict[str, str] | None = None) -> str:
-        ra = self.find(a)
-        rb = self.find(b)
-        if ra != rb:
-            if ra in ("__X_ORIGIN__", "__Y_ORIGIN__"):
-                pass
-            elif (
-                rb in ("__X_ORIGIN__", "__Y_ORIGIN__")
-                or formulas is not None
-                and rb in formulas
-                and ra not in formulas
-            ):
-                ra, rb = rb, ra
-
-            self.parent[rb] = ra
-            if formulas is not None and rb in formulas and ra not in formulas:
-                formulas[ra] = formulas.pop(rb)
-        return ra
-
-
-# ======================================================================
-# Modular Constraint Handlers
-# ======================================================================
-
-
-class BaseHandler:
-    def process_linear(self, model: ParametricModel, c: Any, idx: int) -> None:
-        pass
-
-    def process_nonlinear(self, model: ParametricModel, c: Any, idx: int) -> None:
-        pass
-
-
-class HorizontalHandler(BaseHandler):
-    def process_linear(self, model: ParametricModel, c: Any, idx: int) -> None:
-        p1 = model._resolve_point_ref(c.First, 1 if c.FirstPos == 0 else c.FirstPos)
-        p2 = model._resolve_point_ref(
-            c.First if c.FirstPos == 0 else c.Second,
-            2 if c.FirstPos == 0 else c.SecondPos,
-        )
-        if p1 and p2:
-            model.y_sets.union(p1, p2, model.y_formulas)
-
-
-class VerticalHandler(BaseHandler):
-    def process_linear(self, model: ParametricModel, c: Any, idx: int) -> None:
-        p1 = model._resolve_point_ref(c.First, 1 if c.FirstPos == 0 else c.FirstPos)
-        p2 = model._resolve_point_ref(
-            c.First if c.FirstPos == 0 else c.Second,
-            2 if c.FirstPos == 0 else c.SecondPos,
-        )
-        if p1 and p2:
-            model.x_sets.union(p1, p2, model.x_formulas)
-
-
-class DistanceXHandler(BaseHandler):
-    def process_linear(self, model: ParametricModel, c: Any, idx: int) -> None:
-        param = model.constraint_vars.get(idx)
-        if not param:
-            return
-        p1, p2 = model._get_constraint_pair(c)
-        if p1 and p2 and p1 in model.point_coords and p2 in model.point_coords:
-            dx = model.point_coords[p2][0] - model.point_coords[p1][0]
-            model.x_edges.append(
-                (model.x_sets.find(p1), model.x_sets.find(p2), param, dx)
-            )
-
-
-class DistanceYHandler(BaseHandler):
-    def process_linear(self, model: ParametricModel, c: Any, idx: int) -> None:
-        param = model.constraint_vars.get(idx)
-        if not param:
-            return
-        p1, p2 = model._get_constraint_pair(c)
-        if p1 and p2 and p1 in model.point_coords and p2 in model.point_coords:
-            dy = model.point_coords[p2][1] - model.point_coords[p1][1]
-            model.y_edges.append(
-                (model.y_sets.find(p1), model.y_sets.find(p2), param, dy)
-            )
-
-
-class DistanceHandler(BaseHandler):
-    def process_linear(self, model: ParametricModel, c: Any, idx: int) -> None:
-        param = model.constraint_vars.get(idx)
-        if not param:
-            return
-
-        # Axis-pinned distances
-        if (c.Second == _XAXIS_ID and c.SecondPos == 0) or (
-            c.First == _XAXIS_ID and c.FirstPos == 0
-        ):
-            tgt_geo = c.First if c.Second == _XAXIS_ID else c.Second
-            tgt_pos = c.FirstPos if c.Second == _XAXIS_ID else c.SecondPos
-            pt = model._resolve_point_ref(tgt_geo, 1 if tgt_pos == 0 else tgt_pos)
-            if pt and pt in model.point_coords:
-                root_y = model.y_sets.find(pt)
-                sign = "" if model.point_coords[pt][1] >= 0 else "-"
-                model.y_formulas[root_y] = f"{sign}{param}"
-            return
-
-        if (c.Second == _YAXIS_ID and c.SecondPos == 0) or (
-            c.First == _YAXIS_ID and c.FirstPos == 0
-        ):
-            tgt_geo = c.First if c.Second == _YAXIS_ID else c.Second
-            tgt_pos = c.FirstPos if c.Second == _YAXIS_ID else c.SecondPos
-            pt = model._resolve_point_ref(tgt_geo, 1 if tgt_pos == 0 else tgt_pos)
-            if pt and pt in model.point_coords:
-                root_x = model.x_sets.find(pt)
-                sign = "" if model.point_coords[pt][0] >= 0 else "-"
-                model.x_formulas[root_x] = f"{sign}{param}"
-            return
-
-        p1, p2 = model._get_constraint_pair(c)
-        if not (p1 and p2 and p1 in model.point_coords and p2 in model.point_coords):
-            return
-
-        c1, c2 = model.point_coords[p1], model.point_coords[p2]
-        dx = c2[0] - c1[0]
-        dy = c2[1] - c1[1]
-
-        # Orthogonal lines
-        if abs(dy) < 1e-4:
-            model.x_edges.append(
-                (model.x_sets.find(p1), model.x_sets.find(p2), param, dx)
-            )
-        elif abs(dx) < 1e-4:
-            model.y_edges.append(
-                (model.y_sets.find(p1), model.y_sets.find(p2), param, dy)
-            )
-        else:
-            model.length_lines[c.First] = (p1, p2, param)
-
-
-class PointOnObjectHandler(BaseHandler):
-    def process_linear(self, model: ParametricModel, c: Any, idx: int) -> None:
-        pt = model._resolve_point_ref(c.First, c.FirstPos)
-        target = c.Second
-        if not pt:
-            pt = model._resolve_point_ref(c.Second, c.SecondPos)
-            target = c.First
-
-        if not pt:
-            return
-
-        if target == _XAXIS_ID:
-            model.y_sets.union(pt, "__Y_ORIGIN__", model.y_formulas)
-        elif target == _YAXIS_ID:
-            model.x_sets.union(pt, "__X_ORIGIN__", model.x_formulas)
-        elif 0 <= target < len(model.sketch.Geometry):
-            geom = model.sketch.Geometry[target]
-            if hasattr(geom, "StartPoint") and hasattr(geom, "EndPoint"):
-                ps = get_coordinates(geom.StartPoint)
-                pe = get_coordinates(geom.EndPoint)
-                line_ref = model.vertex_map.get((target, 1))
-                if line_ref:
-                    if abs(ps[1] - pe[1]) < 1e-4:
-                        model.y_sets.union(pt, line_ref, model.y_formulas)
-                    elif abs(ps[0] - pe[0]) < 1e-4:
-                        model.x_sets.union(pt, line_ref, model.x_formulas)
-
-
-class SymmetricHandler(BaseHandler):
-    def process_linear(self, model: ParametricModel, c: Any, idx: int) -> None:
-        fp = c.FirstPos if c.FirstPos else 1
-        sp = c.SecondPos if c.SecondPos else 1
-        p1 = model._resolve_point_ref(c.First, fp)
-        p2 = model._resolve_point_ref(c.Second, sp)
-        if not (p1 and p2 and p1 in model.point_coords and p2 in model.point_coords):
-            return
-
-        third = getattr(c, "Third", _GEO_NONE)
-        third_pos = getattr(c, "ThirdPos", 0)
-
-        if third == _XAXIS_ID:
-            model.x_sets.union(p1, p2, model.x_formulas)
-            model.y_reflections.append((p1, p2, "__Y_ORIGIN__"))
-        elif third == _YAXIS_ID:
-            model.y_sets.union(p1, p2, model.y_formulas)
-            model.x_reflections.append((p1, p2, "__X_ORIGIN__"))
-        elif not (third <= _GEO_NONE or third < -100) and third_pos != 0:
-            p3 = model._resolve_point_ref(third, third_pos)
-            if p3 and p3 in model.point_coords:
-                model.x_midpoints.append((p1, p2, p3))
-                model.y_midpoints.append((p1, p2, p3))
-
-
-class AngleHandler(BaseHandler):
-    def process_linear(self, model: ParametricModel, c: Any, idx: int) -> None:
-        param = model.constraint_vars.get(idx)
-        if not param:
-            return
-        p_v1 = model._resolve_point_ref(c.First, c.FirstPos)
-        p_v2 = model._resolve_point_ref(c.Second, c.SecondPos)
-        common = p_v1 if (p_v1 and p_v1 == p_v2) else None
-        if common:
-            model.angle_constraints.append((c.First, c.Second, param, common))
-
-
-class EqualHandler(BaseHandler):
-    """Handles Equal constraints between lines (lengths) or circles/arcs (radii)."""
-
-    def process_linear(self, model: ParametricModel, c: Any, idx: int) -> None:
-        g1_id = c.First
-        g2_id = c.Second
-        if not (
-            0 <= g1_id < len(model.sketch.Geometry)
-            and 0 <= g2_id < len(model.sketch.Geometry)
-        ):
-            return
-
-        g1 = model.sketch.Geometry[g1_id]
-        g2 = model.sketch.Geometry[g2_id]
-
-        # Case 1: Equal Radii (Circles or Arcs of Circles)
-        if hasattr(g1, "Radius") and hasattr(g2, "Radius"):
-            model.radius_sets.union(str(g1_id), str(g2_id))
-
-        # Case 2: Equal Lengths (Line Segments)
-        elif hasattr(g1, "StartPoint") and hasattr(g2, "StartPoint"):
-            model.length_sets.union(str(g1_id), str(g2_id))
-
-
-class CoincidentHandler(BaseHandler):
-    """Unifies points that are coincident with each other or with axes."""
-
-    def process_linear(self, model: ParametricModel, c: Any, idx: int) -> None:
-        p1 = model._resolve_point_ref(c.First, c.FirstPos)
-
-        # Case 1: Point coincident with coordinate axes
-        if p1:
-            if c.Second == _XAXIS_ID:
-                if c.SecondPos != 0:
-                    model.x_sets.union(p1, "__X_ORIGIN__", model.x_formulas)
-                model.y_sets.union(p1, "__Y_ORIGIN__", model.y_formulas)
-                return
-            elif c.Second == _YAXIS_ID:
-                if c.SecondPos != 0:
-                    model.y_sets.union(p1, "__Y_ORIGIN__", model.y_formulas)
-                model.x_sets.union(p1, "__X_ORIGIN__", model.x_formulas)
-                return
-
-        # Case 2: Point coincident with another point -> unify both X and Y!
-        p2 = (
-            model._resolve_point_ref(c.Second, c.SecondPos)
-            if not _is_geo_none(c.Second) and c.Second >= 0
-            else None
-        )
-        if p1 and p2:
-            model.x_sets.union(p1, p2, model.x_formulas)
-            model.y_sets.union(p1, p2, model.y_formulas)
-            return
-
-        # Case 3: Point coincident with a curve -> delegate to PointOnObject
-        HANDLERS["PointOnObject"].process_linear(model, c, idx)
-
-
-class ParallelHandler(BaseHandler):
-    """Propagates orthogonality and slopes between parallel lines."""
-
-    def process_linear(self, model: ParametricModel, c: Any, idx: int) -> None:
-        g1_id, g2_id = c.First, c.Second
-        if not (
-            0 <= g1_id < len(model.sketch.Geometry)
-            and 0 <= g2_id < len(model.sketch.Geometry)
-        ):
-            return
-
-        g1 = model.sketch.Geometry[g1_id]
-        g2 = model.sketch.Geometry[g2_id]
-        if hasattr(g1, "StartPoint") and hasattr(g2, "StartPoint"):
-            p1_s, p1_e = (
-                model.vertex_map.get((g1_id, 1)),
-                model.vertex_map.get((g1_id, 2)),
-            )
-            p2_s, p2_e = (
-                model.vertex_map.get((g2_id, 1)),
-                model.vertex_map.get((g2_id, 2)),
-            )
-            if not (p1_s and p1_e and p2_s and p2_e):
-                return
-
-            # If line 1 is horizontal, line 2 is horizontal (same Y)
-            if model._geom_is_horizontal(g1):
-                model.y_sets.union(p2_s, p2_e, model.y_formulas)
-            elif model._geom_is_horizontal(g2):
-                model.y_sets.union(p1_s, p1_e, model.y_formulas)
-
-            # If line 1 is vertical, line 2 is vertical (same X)
-            elif model._geom_is_vertical(g1):
-                model.x_sets.union(p2_s, p2_e, model.x_formulas)
-            elif model._geom_is_vertical(g2):
-                model.x_sets.union(p1_s, p1_e, model.x_formulas)
-
-
-class PerpendicularHandler(BaseHandler):
-    """Enforces 90-degree relationships between perpendicular lines."""
-
-    def process_linear(self, model: ParametricModel, c: Any, idx: int) -> None:
-        g1_id, g2_id = c.First, c.Second
-        if not (
-            0 <= g1_id < len(model.sketch.Geometry)
-            and 0 <= g2_id < len(model.sketch.Geometry)
-        ):
-            return
-
-        g1 = model.sketch.Geometry[g1_id]
-        g2 = model.sketch.Geometry[g2_id]
-        if hasattr(g1, "StartPoint") and hasattr(g2, "StartPoint"):
-            p1_s, p1_e = (
-                model.vertex_map.get((g1_id, 1)),
-                model.vertex_map.get((g1_id, 2)),
-            )
-            p2_s, p2_e = (
-                model.vertex_map.get((g2_id, 1)),
-                model.vertex_map.get((g2_id, 2)),
-            )
-            if not (p1_s and p1_e and p2_s and p2_e):
-                return
-
-            # If line 1 is horizontal, line 2 becomes vertical (same X)
-            if model._geom_is_horizontal(g1):
-                model.x_sets.union(p2_s, p2_e, model.x_formulas)
-            elif model._geom_is_horizontal(g2):
-                model.x_sets.union(p1_s, p1_e, model.x_formulas)
-
-            # If line 1 is vertical, line 2 becomes horizontal (same Y)
-            elif model._geom_is_vertical(g1):
-                model.y_sets.union(p2_s, p2_e, model.y_formulas)
-            elif model._geom_is_vertical(g2):
-                model.y_sets.union(p1_s, p1_e, model.y_formulas)
-
-
-class TangentHandler(BaseHandler):
-    """Propagates tangency between lines and arcs/circles."""
-
-    def process_linear(self, model: ParametricModel, c: Any, idx: int) -> None:
-        g1_id, g2_id = c.First, c.Second
-        if not (
-            0 <= g1_id < len(model.sketch.Geometry)
-            and 0 <= g2_id < len(model.sketch.Geometry)
-        ):
-            return
-
-        g1 = model.sketch.Geometry[g1_id]
-        g2 = model.sketch.Geometry[g2_id]
-
-        # Case: Line tangent to Circle / Arc
-        line_id = (
-            g1_id
-            if hasattr(g1, "StartPoint") and not hasattr(g1, "Radius")
-            else (
-                g2_id
-                if hasattr(g2, "StartPoint") and not hasattr(g2, "Radius")
-                else None
-            )
-        )
-        circle_id = g2_id if line_id == g1_id else (g1_id if line_id == g2_id else None)
-
-        if line_id is not None and circle_id is not None:
-            c_center = model.vertex_map.get((circle_id, 3))
-            p_line_s = model.vertex_map.get((line_id, 1))
-            p_line_e = model.vertex_map.get((line_id, 2))
-
-            if c_center and p_line_s and p_line_e and c_center in model.point_coords:
-                # Find the shared contact point
-                contact_pt = (
-                    p_line_s
-                    if (
-                        p_line_s
-                        in (
-                            model.vertex_map.get((circle_id, 1)),
-                            model.vertex_map.get((circle_id, 2)),
-                        )
-                    )
-                    else (
-                        p_line_e
-                        if (
-                            p_line_e
-                            in (
-                                model.vertex_map.get((circle_id, 1)),
-                                model.vertex_map.get((circle_id, 2)),
-                            )
-                        )
-                        else None
-                    )
-                )
-                if contact_pt and contact_pt in model.point_coords:
-                    c_pt = model.point_coords[contact_pt]
-                    c_cen = model.point_coords[c_center]
-                    # If radius vector is vertical, tangent line is horizontal
-                    if abs(c_pt[0] - c_cen[0]) < 1e-4:
-                        model.y_sets.union(p_line_s, p_line_e, model.y_formulas)
-                    # If radius vector is horizontal, tangent line is vertical
-                    elif abs(c_pt[1] - c_cen[1]) < 1e-4:
-                        model.x_sets.union(p_line_s, p_line_e, model.x_formulas)
-
-
-class RadiusHandler(BaseHandler):
-    """Maps Radius constraint to the geometry's radius parameter."""
-
-    def process_linear(self, model: ParametricModel, c: Any, idx: int) -> None:
-        param = model.constraint_vars.get(idx)
-        if param and 0 <= c.First < len(model.sketch.Geometry):
-            model.radius_params[c.First] = param
-
-
-class DiameterHandler(BaseHandler):
-    """Maps Diameter constraint as (param / 2) to the geometry's radius."""
-
-    def process_linear(self, model: ParametricModel, c: Any, idx: int) -> None:
-        param = model.constraint_vars.get(idx)
-        if param and 0 <= c.First < len(model.sketch.Geometry):
-            model.radius_params[c.First] = f"{param} / 2"
-
-
-class BlockHandler(BaseHandler):
-    """Fixes a point or line in place by binding its current coordinates."""
-
-    def process_linear(self, model: ParametricModel, c: Any, idx: int) -> None:
-        pt = model._resolve_point_ref(c.First, 1 if c.FirstPos == 0 else c.FirstPos)
-        if pt and pt in model.point_coords:
-            px, py = model.point_coords[pt]
-            rx = model.x_sets.find(pt)
-            ry = model.y_sets.find(pt)
-            if rx not in model.x_formulas:
-                model.x_formulas[rx] = draw._to_str(px)
-            if ry not in model.y_formulas:
-                model.y_formulas[ry] = draw._to_str(py)
-
-
-class InternalAlignmentHandler(BaseHandler):
-    """Handles internal ellipse diameters and focus points."""
-
-    def process_linear(self, model: ParametricModel, c: Any, idx: int) -> None:
-        # Unifies internal geometry vertices with the host geometry
-        p1 = model._resolve_point_ref(c.First, c.FirstPos)
-        p2 = model._resolve_point_ref(c.Second, c.SecondPos)
-        if p1 and p2:
-            model.x_sets.union(p1, p2, model.x_formulas)
-            model.y_sets.union(p1, p2, model.y_formulas)
-
-
-# Register all modular handlers
-HANDLERS: dict[str, BaseHandler] = {
-    # Orthogonal
-    "Horizontal": HorizontalHandler(),
-    "Vertical": VerticalHandler(),
-    # Dimensions
-    "DistanceX": DistanceXHandler(),
-    "DistanceY": DistanceYHandler(),
-    "Distance": DistanceHandler(),
-    "Radius": RadiusHandler(),
-    "Diameter": DiameterHandler(),
-    # Angles & Orientations
-    "Angle": AngleHandler(),
-    "Parallel": ParallelHandler(),
-    "Perpendicular": PerpendicularHandler(),
-    "Tangent": TangentHandler(),
-    # Positions & Alignments
-    "Coincident": CoincidentHandler(),
-    "PointOnObject": PointOnObjectHandler(),
-    "PointOnCurve": PointOnObjectHandler(),
-    "Symmetric": SymmetricHandler(),
-    "Equal": EqualHandler(),
-    # Miscellaneous FreeCAD Constraints
-    "Block": BlockHandler(),
-    "InternalAlignment": InternalAlignmentHandler(),
-}
-
-
-# ======================================================================
-# Main Parametric Solver Engine
-# ======================================================================
+import draw
 
 
 class ParametricModel:
+    """Extracts constraints from a FreeCAD sketch and solves them symbolically."""
+
     def __init__(self, sketch_obj: Any, pairs_dict: dict[str, str]) -> None:
-        self.sketch = sketch_obj
+        self.sketch_obj = sketch_obj
         self.pairs_dict = pairs_dict
-        self.aux_params: dict[str, str] = {}
-
-        # Disjoint sets for Equal constraints
-        self.length_sets = DisjointSet()
-        self.radius_sets = DisjointSet()
-
-        self.vertex_map: dict[tuple[int, int], str] = {}
-        self.point_coords: dict[str, tuple[float, float]] = {}
-
-        self.constraint_vars: dict[int, str] = {}
-        self.params: dict[str, str] = {}
         self.radius_params: dict[int, str] = {}
+        self.parameters: dict[str, float] = {}  # param_name -> default_value
+        self.point_solutions: dict[str, tuple[sympy.Expr, sympy.Expr]] = {}
+        self._geo_point_map: dict[tuple[int, int], str] = {}
 
-        self.fixed_x: set[str] = set()
-        self.fixed_y: set[str] = set()
+        self._prepopulate_points()
+        self._extract_constraints_and_solve()
 
-        self.x_sets = DisjointSet()
-        self.y_sets = DisjointSet()
+    def _prepopulate_points(self) -> None:
+        """Pre-populates pairs_dict so point names (P0, P1, ...) match draw.py."""
+        geoms = getattr(self.sketch_obj, "GeometryFacadeList", [])
+        if not geoms and hasattr(self.sketch_obj, "Geometry"):
+            geoms = self.sketch_obj.Geometry
 
-        self.x_formulas: dict[str, str] = {}
-        self.y_formulas: dict[str, str] = {}
+        for geo_id, elem in enumerate(geoms):
+            geom = getattr(elem, "Geometry", elem)
+            geom_name = type(geom).__name__.replace("Geom", "")
 
-        self.x_edges: list[tuple[str, str, str, float]] = []
-        self.y_edges: list[tuple[str, str, str, float]] = []
-        self.x_midpoints: list[tuple[str, str, str]] = []
-        self.y_midpoints: list[tuple[str, str, str]] = []
-        self.x_reflections: list[tuple[str, str, str]] = []
-        self.y_reflections: list[tuple[str, str, str]] = []
+            if geom_name in ("LineSegment", "BSplineCurve"):
+                p0 = draw._pair(geom.StartPoint, self.pairs_dict)
+                p1 = draw._pair(geom.EndPoint, self.pairs_dict)
+                self._geo_point_map[(geo_id, 1)] = p0
+                self._geo_point_map[(geo_id, 2)] = p1
+            elif geom_name in (
+                "ArcOfCircle",
+                "ArcOfEllipse",
+                "ArcOfHyperbola",
+                "ArcOfParabola",
+            ):
+                p0 = draw._pair(geom.StartPoint, self.pairs_dict)
+                p1 = draw._pair(geom.EndPoint, self.pairs_dict)
+                c_loc = getattr(geom, "Location", getattr(geom, "Center", None))
+                pc = draw._pair(c_loc, self.pairs_dict) if c_loc else None
+                self._geo_point_map[(geo_id, 1)] = p0
+                self._geo_point_map[(geo_id, 2)] = p1
+                if pc:
+                    self._geo_point_map[(geo_id, 3)] = pc
+            elif geom_name in ("Circle", "Ellipse"):
+                c_loc = getattr(geom, "Location", getattr(geom, "Center", None))
+                if c_loc:
+                    pc = draw._pair(c_loc, self.pairs_dict)
+                    self._geo_point_map[(geo_id, 3)] = pc
+            elif geom_name == "Point":
+                pt_loc = getattr(geom, "Location", geom)
+                p0 = draw._pair(pt_loc, self.pairs_dict)
+                self._geo_point_map[(geo_id, 1)] = p0
 
-        self.length_lines: dict[int, tuple[str, str, str]] = {}
-        self.angle_constraints: list[tuple[int, int, str, str]] = []
+    def _sanitize_name(self, name: str, fallback_prefix: str, idx: int) -> str:
+        clean = re.sub(r"[^a-zA-Z0-9_]", "_", name.strip()) if name else ""
+        if not clean or clean[0].isdigit():
+            clean = f"{fallback_prefix}{idx}"
+        # Ensure unique name
+        base = clean
+        count = 1
+        while clean in self.parameters:
+            clean = f"{base}_{count}"
+            count += 1
+        return clean
 
-        self.custom_point_exprs: dict[str, str] = {}
-        self.deps: dict[str, set[str]] = {}
+    def _extract_constraints_and_solve(self) -> None:
+        constraints = getattr(self.sketch_obj, "Constraints", [])
+        if not constraints:
+            return
 
-        self._build_vertex_map()
-        self._extract_parameters()
-        self._solve_geometry()
+        equations: list[sympy.Expr] = []
+        point_symbols: dict[str, tuple[sympy.Symbol, sympy.Symbol]] = {}
 
-    @staticmethod
-    def _geom_is_horizontal(geom: Any) -> bool:
-        """Returns True if geometry is a horizontal line segment."""
-        if not (hasattr(geom, "StartPoint") and hasattr(geom, "EndPoint")):
-            return False
-        ps = get_coordinates(geom.StartPoint)
-        pe = get_coordinates(geom.EndPoint)
-        return abs(ps[1] - pe[1]) < 1e-4
+        # Create SymPy symbols and store numeric target values
+        numeric_targets: dict[sympy.Symbol, float] = {}
+        for coord_str, pt_name in self.pairs_dict.items():
+            try:
+                coords = coord_str.strip("()").split(",")
+                x_val, y_val = float(coords[0]), float(coords[1])
+            except (ValueError, IndexError):
+                x_val, y_val = 0.0, 0.0
 
-    @staticmethod
-    def _geom_is_vertical(geom: Any) -> bool:
-        """Returns True if geometry is a vertical line segment."""
-        if not (hasattr(geom, "StartPoint") and hasattr(geom, "EndPoint")):
-            return False
-        ps = get_coordinates(geom.StartPoint)
-        pe = get_coordinates(geom.EndPoint)
-        return abs(ps[0] - pe[0]) < 1e-4
+            x_sym = sympy.Symbol(f"x_{pt_name}", real=True)
+            y_sym = sympy.Symbol(f"y_{pt_name}", real=True)
+            point_symbols[pt_name] = (x_sym, y_sym)
+            numeric_targets[x_sym] = x_val
+            numeric_targets[y_sym] = y_val
 
-    def _build_vertex_map(self) -> None:
-        for geo_id, geom in enumerate(self.sketch.Geometry):
-            for pos_id in (1, 2, 3):
-                try:
-                    pt_vec = self.sketch.getPoint(geo_id, pos_id)
-                    name = draw._pair(pt_vec, self.pairs_dict)
-                    self.vertex_map[(geo_id, pos_id)] = name
-                    self.point_coords[name] = get_coordinates(pt_vec)
-                except Exception:  # noqa: BLE001, S110
-                    pass
+        def get_point_sym(
+            geo_id: int, pos_id: int
+        ) -> tuple[sympy.Symbol, sympy.Symbol] | tuple[float, float] | None:
+            if geo_id == -3 or (geo_id in (-1, -2) and pos_id == 1):
+                return (0.0, 0.0)
+            pt_name = self._geo_point_map.get((geo_id, pos_id))
+            if pt_name and pt_name in point_symbols:
+                return point_symbols[pt_name]
+            return None
 
-        origin_name = draw._pair((0.0, 0.0), self.pairs_dict)
-        self.vertex_map[(-1, 1)] = origin_name
-        self.point_coords[origin_name] = (0.0, 0.0)
-
-    def _extract_parameters(self) -> None:
-        used_names: set[str] = set()
-
-        for idx, c in enumerate(self.sketch.Constraints):
-            if c.Type not in DIM_TYPES:
+        # Process each constraint
+        param_counter = 1
+        for con in constraints:
+            if not getattr(con, "IsActive", True) or not getattr(
+                con, "IsDriving", True
+            ):
                 continue
 
-            base_name = (
-                sanitize_name(c.Name)
-                if (c.Name and c.Name.strip())
-                else f"{c.Type.lower()}_{idx}"
-            )
-            var_name = base_name
-            count = 1
-            while var_name in used_names:
-                var_name = f"{base_name}_{count}"
-                count += 1
-            used_names.add(var_name)
+            con_type = getattr(con, "Type", "")
+            val = float(getattr(con, "Value", 0.0))
+            name = getattr(con, "Name", "")
 
-            self.constraint_vars[idx] = var_name
-            val = float(c.Value)
-
-            # Ensure distance/radius magnitudes are positive
-            if c.Type != "Angle":
-                val = abs(val)
-
-            if c.Type == "Angle":
-                if abs(val) <= 2 * math.pi + 1e-4 and val != 0:
-                    self.params[var_name] = draw._to_str(math.degrees(val), 2)
-                else:
-                    self.params[var_name] = draw._to_str(val, 2)
-            else:
-                self.params[var_name] = draw._to_str(val, 6)
-
-            if c.Type == "Radius":
-                self.radius_params[c.First] = var_name
-            elif c.Type == "Diameter":
-                self.radius_params[c.First] = f"{var_name} / 2"
-
-    def _resolve_point_ref(self, geo_id: int, pos_id: int) -> str | None:
-        if (geo_id, pos_id) in self.vertex_map:
-            return self.vertex_map[(geo_id, pos_id)]
-        if geo_id == _XAXIS_ID and pos_id == 1:
-            return self.vertex_map.get((-1, 1))
-        return None
-
-    def _get_constraint_pair(self, c: Any) -> tuple[str | None, str | None]:
-        p1 = self._resolve_point_ref(c.First, 1 if c.FirstPos == 0 else c.FirstPos)
-        p2 = self._resolve_point_ref(
-            c.First
-            if (c.First == c.Second and c.FirstPos != c.SecondPos)
-            else c.Second,
-            2 if c.SecondPos == 0 else c.SecondPos,
-        )
-        return p1, p2
-
-    def _is_cartesian_solved(self, name: str) -> bool:
-        rx = self.x_sets.find(name)
-        ry = self.y_sets.find(name)
-        return rx in self.x_formulas and ry in self.y_formulas
-
-    def _solve_geometry(self) -> None:
-        # 1. Initialize Axis Anchors
-        self.x_formulas["__X_ORIGIN__"] = "0"
-        self.y_formulas["__Y_ORIGIN__"] = "0"
-
-        origin_pt = self.vertex_map.get((-1, 1))
-        if origin_pt:
-            self.x_sets.union(origin_pt, "__X_ORIGIN__", self.x_formulas)
-            self.y_sets.union(origin_pt, "__Y_ORIGIN__", self.y_formulas)
-
-        for name, (px, py) in self.point_coords.items():
-            if abs(py) < 1e-4:
-                self.y_sets.union(name, "__Y_ORIGIN__", self.y_formulas)
-            if abs(px) < 1e-4:
-                self.x_sets.union(name, "__X_ORIGIN__", self.x_formulas)
-
-        # 2. Execute Linear Handlers (Horizontal, Vertical, Distances, Equal, etc.)
-        for idx, c in enumerate(self.sketch.Constraints):
-            handler = HANDLERS.get(c.Type)
-            if handler:
-                handler.process_linear(self, c, idx)
-
-        # -------------------------------------------------------------
-        # 3. Propagate Equal Constraints
-        # -------------------------------------------------------------
-        # A. Propagate Equal Radii
-        for geo_id in range(len(self.sketch.Geometry)):
-            root_r = self.radius_sets.find(str(geo_id))
-            # If any member in this equal group has a radius param, share it
-            for other_id in range(len(self.sketch.Geometry)):
-                if self.radius_sets.find(str(other_id)) == root_r and (
-                    other_id in self.radius_params and geo_id not in self.radius_params
-                ):
-                    self.radius_params[geo_id] = self.radius_params[other_id]
-
-        # B. Propagate Equal Lengths to length_lines & orthogonal edges
-        equal_length_param: dict[str, str] = {}
-        for geo_id, (p1, p2, len_param) in list(self.length_lines.items()):
-            root_l = self.length_sets.find(str(geo_id))
-            equal_length_param[root_l] = len_param
-
-        for geo_id, geom in enumerate(self.sketch.Geometry):
-            if hasattr(geom, "StartPoint") and hasattr(geom, "EndPoint"):
-                root_l = self.length_sets.find(str(geo_id))
-                len_param = equal_length_param.get(root_l)
-                if not len_param:
-                    continue
-
-                p1 = self.vertex_map.get((geo_id, 1))
-                p2 = self.vertex_map.get((geo_id, 2))
-                if not (
-                    p1 and p2 and p1 in self.point_coords and p2 in self.point_coords
-                ):
-                    continue
-
-                c1, c2 = self.point_coords[p1], self.point_coords[p2]
-                dx = c2[0] - c1[0]
-                dy = c2[1] - c1[1]
-
-                # If this equal line is horizontal, propagate to X edges
-                if abs(dy) < 1e-4:
-                    self.x_edges.append(
-                        (self.x_sets.find(p1), self.x_sets.find(p2), len_param, dx)
-                    )
-                # If this equal line is vertical, propagate to Y edges
-                elif abs(dx) < 1e-4:
-                    self.y_edges.append(
-                        (self.y_sets.find(p1), self.y_sets.find(p2), len_param, dy)
-                    )
-                # If angled, add to length_lines for polar vectors & intersections
-                else:
-                    self.length_lines[geo_id] = (p1, p2, len_param)
-
-        # 4. Pass 2: Angle Vectors with FreeCAD Branch Selection
-        for g1, g2, ang_param, common in self.angle_constraints:
-            for line_geo, other_geo in [(g1, g2), (g2, g1)]:
-                if line_geo in self.length_lines:
-                    lp1, lp2, len_param = self.length_lines[line_geo]
-                    target = lp2 if lp1 == common else lp1
-                    if target in self.custom_point_exprs:
-                        continue
-
-                    other_p1 = self.vertex_map.get((other_geo, 1))
-                    other_p2 = self.vertex_map.get((other_geo, 2))
-                    other_ref = other_p2 if other_p1 == common else other_p1
-
-                    if (
-                        target
-                        and other_ref
-                        and common in self.point_coords
-                        and other_ref in self.point_coords
-                        and target in self.point_coords
-                    ):
-                        c_common = self.point_coords[common]
-                        c_other = self.point_coords[other_ref]
-                        c_target = self.point_coords[target]
-                        L_num = float(self.params[len_param])
-                        ang_num = float(self.params[ang_param])
-
-                        # Evaluate candidate orientations against FreeCAD's true coordinates
-                        best_expr = None
-                        for ref_mode, ref_name in [
-                            ("fwd", f"degrees({other_ref} - {common})"),
-                            ("bwd", f"degrees({common} - {other_ref})"),
-                        ]:
-                            base_deg = (
-                                math.degrees(
-                                    math.atan2(
-                                        c_other[1] - c_common[1],
-                                        c_other[0] - c_common[0],
-                                    )
-                                )
-                                if ref_mode == "fwd"
-                                else math.degrees(
-                                    math.atan2(
-                                        c_common[1] - c_other[1],
-                                        c_common[0] - c_other[0],
-                                    )
-                                )
-                            )
-                            for sign, s_val in [("+", 1), ("-", -1)]:
-                                test_ang = base_deg + s_val * ang_num
-                                test_x = c_common[0] + L_num * math.cos(
-                                    math.radians(test_ang)
-                                )
-                                test_y = c_common[1] + L_num * math.sin(
-                                    math.radians(test_ang)
-                                )
-
-                                if (
-                                    math.hypot(
-                                        test_x - c_target[0], test_y - c_target[1]
-                                    )
-                                    < 0.05
-                                ):
-                                    best_expr = f"{common} + dir({ref_name} {sign} {ang_param}) * {len_param}"
-                                    break
-                            if best_expr:
-                                break
-
-                        if best_expr:
-                            self.custom_point_exprs[target] = best_expr
-                            self.deps.setdefault(target, set()).update(
-                                {common, other_ref}
-                            )
-
-        # 5. Pass 3: Distance/Circle Intersections
-        for line_geo, (p1, p2, len_param) in self.length_lines.items():
-            for base, target in [(p1, p2), (p2, p1)]:
-                if target in self.custom_point_exprs:
-                    continue
-
-                root_x = self.x_sets.find(target)
-                root_y = self.y_sets.find(target)
-                x_solved = root_x in self.x_formulas
-                y_solved = root_y in self.y_formulas
-
-                base_known = (
-                    base in self.custom_point_exprs or self._is_cartesian_solved(base)
+            # Dimensional constraints create parameters
+            param_sym = None
+            if con_type in (
+                "DistanceX",
+                "DistanceY",
+                "Distance",
+                "Radius",
+                "Diameter",
+                "Angle",
+            ):
+                param_name = self._sanitize_name(
+                    name, con_type[0].lower(), param_counter
                 )
-                if not base_known:
-                    continue
+                param_counter += 1
+                self.parameters[param_name] = val
+                param_sym = sympy.Symbol(param_name, positive=True, real=True)
 
-                c_base = self.point_coords[base]
-                c_target = self.point_coords[target]
+                if con_type == "Radius" and con.First >= 0:
+                    self.radius_params[con.First] = param_name
+                elif con_type == "Diameter" and con.First >= 0:
+                    self.radius_params[con.First] = f"({param_name} / 2)"
 
-                if x_solved and not y_solved:
-                    x_expr = self.x_formulas[root_x]
-                    y_sign = "+" if c_target[1] >= c_base[1] else "-"
-                    y_expr = f"{base}.y {y_sign} sqrt(({len_param})^2 - (({x_expr}) - {base}.x)^2)"
-                    self.custom_point_exprs[target] = f"({x_expr}, {y_expr})"
-                    self.deps.setdefault(target, set()).add(base)
+            pt1 = get_point_sym(con.First, con.FirstPos)
+            pt2 = (
+                get_point_sym(con.Second, con.SecondPos)
+                if con.Second != -2000
+                else None
+            )
 
-                elif y_solved and not x_solved:
-                    y_expr = self.y_formulas[root_y]
-                    x_sign = "+" if c_target[0] >= c_base[0] else "-"
-                    x_expr = f"{base}.x {x_sign} sqrt(({len_param})^2 - (({y_expr}) - {base}.y)^2)"
-                    self.custom_point_exprs[target] = f"({x_expr}, {y_expr})"
-                    self.deps.setdefault(target, set()).add(base)
+            # Algebraic modeling
+            if con_type == "Horizontal":
+                if pt1 and pt2:
+                    equations.append(pt1[1] - pt2[1])
+                elif con.First >= 0:
+                    p_start = get_point_sym(con.First, 1)
+                    p_end = get_point_sym(con.First, 2)
+                    if p_start and p_end:
+                        equations.append(p_start[1] - p_end[1])
 
-    def _coordinate_expr(
-        self,
-        point: str,
-        axis: str,
-    ) -> str | None:
-        if axis == "x":
-            root = self.x_sets.find(point)
-            return self.x_formulas.get(root)
+            elif con_type == "Vertical":
+                if pt1 and pt2:
+                    equations.append(pt1[0] - pt2[0])
+                elif con.First >= 0:
+                    p_start = get_point_sym(con.First, 1)
+                    p_end = get_point_sym(con.First, 2)
+                    if p_start and p_end:
+                        equations.append(p_start[0] - p_end[0])
 
-        root = self.y_sets.find(point)
-        return self.y_formulas.get(root)
+            elif con_type == "Coincident" and pt1 and pt2:
+                equations.append(pt1[0] - pt2[0])
+                equations.append(pt1[1] - pt2[1])
 
-    def point_expression(self, name: str) -> str:
-        """Return the best symbolic Asymptote expression for a point.
+            elif con_type == "DistanceX" and param_sym is not None:
+                if pt1 and pt2:
+                    sign = (
+                        1
+                        if numeric_targets.get(pt2[0], 0.0)
+                        >= numeric_targets.get(pt1[0], 0.0)
+                        else -1
+                    )
+                    equations.append(pt2[0] - pt1[0] - sign * param_sym)
+                elif pt1 and con.Second == -2:  # Vertical sketch axis (X = 0)
+                    sign = 1 if numeric_targets.get(pt1[0], 0.0) >= 0 else -1
+                    equations.append(pt1[0] - sign * param_sym)
 
-        The returned expression may reference other named pair variables.
-        Numeric FreeCAD coordinates are only used as a last-resort fallback.
-        """
-        if name in self.custom_point_exprs:
-            return self.custom_point_exprs[name]
+            elif con_type == "DistanceY" and param_sym is not None:
+                if pt1 and pt2:
+                    sign = (
+                        1
+                        if numeric_targets.get(pt2[1], 0.0)
+                        >= numeric_targets.get(pt1[1], 0.0)
+                        else -1
+                    )
+                    equations.append(pt2[1] - pt1[1] - sign * param_sym)
+                elif pt1 and con.Second == -1:  # Horizontal sketch axis (Y = 0)
+                    sign = 1 if numeric_targets.get(pt1[1], 0.0) >= 0 else -1
+                    equations.append(pt1[1] - sign * param_sym)
 
-        rx = self.x_sets.find(name)
-        ry = self.y_sets.find(name)
+            elif con_type == "Distance" and param_sym is not None:
+                if not pt1 and con.First >= 0:
+                    pt1 = get_point_sym(con.First, 1)
+                    pt2 = get_point_sym(con.First, 2)
 
-        x_expr = self.x_formulas.get(rx)
-        y_expr = self.y_formulas.get(ry)
+                if pt1 and pt2:
+                    dx_num = abs(
+                        numeric_targets.get(pt2[0], 0.0)
+                        - numeric_targets.get(pt1[0], 0.0)
+                    )
+                    dy_num = abs(
+                        numeric_targets.get(pt2[1], 0.0)
+                        - numeric_targets.get(pt1[1], 0.0)
+                    )
 
-        if x_expr is not None and y_expr is not None:
-            return f"({x_expr}, {y_expr})"
+                    if dy_num < 1e-6:  # Effectively horizontal
+                        sign = (
+                            1
+                            if numeric_targets.get(pt2[0], 0.0)
+                            >= numeric_targets.get(pt1[0], 0.0)
+                            else -1
+                        )
+                        equations.append(pt2[0] - pt1[0] - sign * param_sym)
+                    elif dx_num < 1e-6:  # Effectively vertical
+                        sign = (
+                            1
+                            if numeric_targets.get(pt2[1], 0.0)
+                            >= numeric_targets.get(pt1[1], 0.0)
+                            else -1
+                        )
+                        equations.append(pt2[1] - pt1[1] - sign * param_sym)
+                    else:
+                        equations.append(
+                            (pt2[0] - pt1[0]) ** 2
+                            + (pt2[1] - pt1[1]) ** 2
+                            - param_sym**2
+                        )
 
-        if x_expr is not None or y_expr is not None:
-            x = x_expr if x_expr is not None else self._fallback_coordinate(name, 0)
-            y = y_expr if y_expr is not None else self._fallback_coordinate(name, 1)
-            return f"({x}, {y})"
+        if not equations:
+            return
 
-        return self._fallback_point(name)
+        all_syms = [s for pair in point_symbols.values() for s in pair]
 
-    def _fallback_coordinate(self, name: str, index: int) -> str:
-        coords = self.point_coords.get(name)
-        if coords is None:
-            raise KeyError(f"No coordinates known for point {name}")
-        return draw._to_str(coords[index])
+        # Solve system using SymPy
+        try:
+            solutions = sympy.solve(equations, all_syms, dict=True)
+        except Exception:  # noqa: BLE001
+            # Fall back to solving linear equations only
+            linear_eqs = [
+                eq
+                for eq in equations
+                if eq.is_polynomial()
+                and all(sympy.degree(eq, s) <= 1 for s in all_syms)
+            ]
+            solutions = sympy.solve(linear_eqs, all_syms, dict=True)
 
-    def _fallback_point(self, name: str) -> str:
-        coords = self.point_coords.get(name)
-        if coords is None:
-            raise KeyError(f"No coordinates known for point {name}")
-        return f"({draw._to_str(coords[0])}, {draw._to_str(coords[1])})"
+        if not solutions:
+            return
 
-    def _point_dependencies(self, name: str) -> set[str]:
-        """Return named pair dependencies used by a point expression."""
-        return set(self.deps.get(name, set()))
+        # Pick best branch matching the sketch's numeric coordinates
+        best_sol = solutions[0]
+        if len(solutions) > 1:
+            best_error = float("inf")
+            subs_params = {sympy.Symbol(k): v for k, v in self.parameters.items()}
+            for candidate in solutions:
+                curr_error = 0.0
+                for sym, target in numeric_targets.items():
+                    if sym in candidate:
+                        try:
+                            val = float(candidate[sym].evalf(subs=subs_params))
+                            curr_error += (val - target) ** 2
+                        except (TypeError, ValueError):
+                            curr_error += 1e6
+                if curr_error < best_error:
+                    best_error = curr_error
+                    best_sol = candidate
+
+        # Store solutions for each point
+        for pt_name, (x_sym, y_sym) in point_symbols.items():
+            x_sol = best_sol.get(x_sym, sympy.Float(numeric_targets[x_sym]))
+            y_sol = best_sol.get(y_sym, sympy.Float(numeric_targets[y_sym]))
+            self.point_solutions[pt_name] = (x_sol, y_sol)
 
     @staticmethod
-    def _point_sort_key(name: str) -> tuple[int, str]:
-        """Sort P0, P1, ... numerically while remaining safe for other names."""
-        suffix = name[1:]
-        return (
-            int(suffix) if suffix.isdigit() else 999999,
-            name,
-        )
+    def _expr_to_asy(expr: sympy.Expr) -> str:
+        """Converts a SymPy expression to Asymptote-compatible syntax."""
+        if expr.is_number:
+            val = float(expr)
+            if abs(val - round(val)) < 1e-6:
+                return str(int(round(val)))
+            return f"{val:g}"
+
+        s = sympy.sstr(expr)
+        s = s.replace("**", "^")
+        return s
 
     def format_asymptote_definitions(self, paths_and_circles_str: str = "") -> str:
-        out = ""
+        """Formats the parameter declarations and point definitions for Asymptote."""
+        point_lines: list[tuple[str, str]] = []  # (pt_name, line)
+        referenced_text = paths_and_circles_str
 
-        # Always output all extracted sketch parameters when parametric mode is on
-        if self.params or self.aux_params:
-            out += "// --- Predefined Parameters ---\n"
+        # Format points
+        for coord_str, name in sorted(
+            self.pairs_dict.items(),
+            key=lambda i: int(i[1][1:]) if i[1][1:].isdigit() else 999999,
+        ):
+            if name in self.point_solutions:
+                x_sym, y_sym = self.point_solutions[name]
+                x_str = self._expr_to_asy(x_sym)
+                y_str = self._expr_to_asy(y_sym)
+                line = f"pair {name} = ({x_str}, {y_str});\n"
+            else:
+                line = f"pair {name} = {coord_str};\n"
 
-            for name, value in self.params.items():
-                out += f"real {name} = {value};\n"
+            point_lines.append((name, line))
+            referenced_text += f" {line}"
 
-            for name, value in self.aux_params.items():
-                out += f"real {name} = {value};\n"
+        # Prune unused / dead parameters
+        active_params: list[str] = []
+        for param_name, default_val in self.parameters.items():
+            pattern = rf"\b{re.escape(param_name)}\b"
+            if re.search(pattern, referenced_text):
+                val_str = f"{default_val:g}"
+                active_params.append(f"real {param_name} = {val_str};\n")
 
-            out += "\n"
+        params_section = ""
+        if active_params:
+            params_section = "// --- Parameters ---\n" + "".join(active_params) + "\n"
 
-        out += "// --- Points & Coordinates ---\n"
-
-        inv_pairs = {name: coord for coord, name in self.pairs_dict.items()}
-
-        sorted_names = sorted(
-            inv_pairs,
-            key=self._point_sort_key,
+        points_section = "// --- Points & Coordinates ---\n" + "".join(
+            line for _, line in point_lines
         )
-
-        declared: set[str] = set()
-        unresolved = list(sorted_names)
-
-        while unresolved:
-            progress = False
-
-            for name in list(unresolved):
-                coord_str = inv_pairs[name]
-
-                x_fallback, y_fallback = coord_str.strip("()").split(",")
-                x_fallback = x_fallback.strip()
-                y_fallback = y_fallback.strip()
-
-                rx = self.x_sets.find(name)
-                ry = self.y_sets.find(name)
-
-                # Do not emit a point until its symbolic pair dependencies
-                # have already been declared.
-                deps = self._point_dependencies(name)
-
-                if deps and not deps.issubset(declared):
-                    continue
-
-                if name in self.custom_point_exprs:
-                    expr = self.custom_point_exprs[name]
-                else:
-                    x_expr = self.x_formulas.get(rx, x_fallback)
-                    y_expr = self.y_formulas.get(ry, y_fallback)
-                    expr = f"({x_expr}, {y_expr})"
-
-                out += f"pair {name} = {expr};\n"
-
-                declared.add(name)
-                unresolved.remove(name)
-                progress = True
-
-            if progress:
-                continue
-
-            # We have a dependency cycle or some other unresolved symbolic
-            # dependency. Do not restart the whole point-generation process.
-            name = unresolved.pop(0)
-
-            expr = self.point_expression(name)
-
-            out += (
-                f"// WARNING: unresolved symbolic dependencies for {name}\n"
-                f"// Parametric fallback to current FreeCAD coordinates.\n"
-                f"pair {name} = {expr};\n"
-            )
-
-            declared.add(name)
-
-        if paths_and_circles_str:
-            out += "\n"
-            out += paths_and_circles_str
-
-        return out
+        return f"{params_section}{points_section}"

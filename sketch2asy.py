@@ -8,6 +8,7 @@ import sys
 sys.path.append(os.path.dirname(__file__))
 
 from datetime import datetime
+from typing import Any
 
 # pyrefly: ignore [missing-import]
 import FreeCAD as App
@@ -16,21 +17,25 @@ import FreeCAD as App
 import FreeCADGui as Gui
 
 try:
-    # pyrefly: ignore [missing-import]
     from PySide2 import QtWidgets
 except ImportError:
     try:
-        # pyrefly: ignore [missing-import]
         from PySide import QtWidgets
     except ImportError:
         from PySide6 import QtWidgets
 
-from typing import Any
-
-import draw
 from config import cfg
-from parametric import ParametricModel
-from settings_dialog import SettingsDialog
+import draw
+
+try:
+    from parametric import ParametricModel
+except ImportError:
+    ParametricModel = None
+
+try:
+    from settings_dialog import SettingsDialog
+except ImportError:
+    SettingsDialog = None
 
 
 def get_target_sketch() -> Any | None:
@@ -41,7 +46,6 @@ def get_target_sketch() -> Any | None:
         if hasattr(obj, "GeometryFacadeList"):
             return obj
 
-    # Fallback to selected object in the tree view
     selection = Gui.Selection.getSelection()
     if selection:
         for sel in selection:
@@ -133,12 +137,13 @@ def export_sketch(sketch_obj: Any) -> None:
     chainable_elements: list[dict[str, str | None]] = []
     standalone_paths = ""
 
-    # Check if user enabled parametric export
-    is_parametric = getattr(cfg, "parametric_output", True)
+    is_parametric = getattr(cfg, "parametric_output", True) and (
+        ParametricModel is not None
+    )
 
     model = None
-    radius_params = {}
-    if is_parametric:
+    radius_params: dict[int, str] = {}
+    if is_parametric and ParametricModel is not None:
         try:
             model = ParametricModel(sketch_obj, pairs_dict)
             radius_params = model.radius_params
@@ -148,7 +153,11 @@ def export_sketch(sketch_obj: Any) -> None:
             radius_params = {}
 
     # Process sketch geometry
-    for geo_id, element in enumerate(sketch_obj.GeometryFacadeList):
+    geoms = getattr(sketch_obj, "GeometryFacadeList", [])
+    if not geoms and hasattr(sketch_obj, "Geometry"):
+        geoms = sketch_obj.Geometry
+
+    for geo_id, element in enumerate(geoms):
         item = draw.extract_chainable_element(element, pairs_dict)
         if item:
             chainable_elements.append(item)
@@ -163,24 +172,26 @@ def export_sketch(sketch_obj: Any) -> None:
     for subpaths, is_closed, pen in chains:
         chained_paths += draw.format_compact_chain(subpaths, is_closed, pen)
 
-    # Generate point block and prune dead parameters
+    draw_section = "\n// --- Geometry Paths ---\n" + chained_paths + standalone_paths
+
+    # Generate point block and parameter definitions
+    define_section = ""
     if is_parametric and model:
-        draw_section = (
-            "\n// --- Geometry Paths ---\n" + chained_paths + standalone_paths
-        )
-        define_section = model.format_asymptote_definitions(
-            paths_and_circles_str=draw_section
-        )
-    else:
+        try:
+            define_section = model.format_asymptote_definitions(
+                paths_and_circles_str=draw_section
+            )
+        except Exception as e:  # noqa: BLE001
+            App.Console.PrintError(f"Parametric formatting fallback: {e}\n")
+            define_section = ""
+
+    if not define_section:
         define_section = "// --- Points & Coordinates ---\n"
         for coord_str, name in sorted(
             pairs_dict.items(),
             key=lambda i: int(i[1][1:]) if i[1][1:].isdigit() else 999999,
         ):
             define_section += f"pair {name} = {coord_str};\n"
-        draw_section = (
-            "\n// --- Geometry Paths ---\n" + chained_paths + standalone_paths
-        )
 
     # Dot labels
     show_dots = ""
@@ -189,19 +200,16 @@ def export_sketch(sketch_obj: Any) -> None:
         for name in pairs_dict.values():
             show_dots += f'dot("${name}$", {name});\n'
 
-    # Preamble & Paths
     date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # noqa: DTZ005
     preamble = build_preamble(date_str)
-    draw_section = "\n// --- Geometry Paths ---\n" + chained_paths + standalone_paths
-
     asy_output = f"{preamble}\n{define_section}{show_dots}\n{draw_section}"
     App.Console.PrintMessage(asy_output)
 
     # Save Dialog
-    doc = sketch_obj.Document
+    doc = getattr(sketch_obj, "Document", None)
     doc_dir = (
         os.path.dirname(doc.FileName)
-        if doc and doc.FileName
+        if doc and getattr(doc, "FileName", None)
         else os.path.expanduser("~")
     )
     sketch_name = getattr(sketch_obj, "Label", getattr(sketch_obj, "Name", "Sketch"))
@@ -225,13 +233,14 @@ def main() -> None:
         App.Console.PrintError("Please edit or select a Sketch before exporting.\n")
         return
 
-    # Show Settings Dialog
-    dlg = SettingsDialog()
-    if dlg.exec_() == QtWidgets.QDialog.Accepted:
-        export_sketch(sketch_obj)
+    if SettingsDialog is not None:
+        dlg = SettingsDialog()
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return
+
+    export_sketch(sketch_obj)
 
 
-# FreeCAD Command Registration
 class Sketch2AsyCommand:
     """FreeCAD GUI Command to run sketch2asy."""
 
@@ -250,7 +259,6 @@ class Sketch2AsyCommand:
         return get_target_sketch() is not None
 
 
-# Register the command into FreeCAD's command manager
 if hasattr(Gui, "addCommand"):
     Gui.addCommand("Sketch2Asy_Export", Sketch2AsyCommand())
 

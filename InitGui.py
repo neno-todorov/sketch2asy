@@ -11,8 +11,6 @@ import FreeCADGui as Gui
 import sketch2asy
 
 CMD_NAME = "Sketch2Asy_Export"
-MENU_TEXT = "Sketch2Asy"
-TOOL_TIP = "Export FreeCAD sketches to Asymptote"
 
 
 def auto_inject_to_sketcher() -> None:
@@ -30,8 +28,8 @@ auto_inject_to_sketcher()
 
 class Sketch2AsyWB(Gui.Workbench):
     def __init__(self):
-        self.__class__.MenuText = MENU_TEXT
-        self.__class__.ToolTip = TOOL_TIP
+        self.__class__.MenuText = "Sketch2Asy"
+        self.__class__.ToolTip = "Export FreeCAD sketches to Asymptote"
         # Safe icon path using sketch2asy.__file__
         icon_path = os.path.join(os.path.dirname(sketch2asy.__file__), "sketch2asy.svg")
         if os.path.exists(icon_path):
@@ -39,8 +37,8 @@ class Sketch2AsyWB(Gui.Workbench):
 
     def Initialize(self):
         self.command_list = [CMD_NAME]
-        self.appendToolbar(MENU_TEXT, self.command_list)
-        self.appendMenu(MENU_TEXT, self.command_list)
+        self.appendToolbar("Sketch2Asy", self.command_list)
+        self.appendMenu("Sketch2Asy", self.command_list)
 
     def Activated(self):
         return
@@ -49,7 +47,7 @@ class Sketch2AsyWB(Gui.Workbench):
         return
 
     def ContextMenu(self, recipient):
-        self.appendContextMenu(MENU_TEXT, self.command_list)
+        self.appendContextMenu("Sketch2Asy", self.command_list)
 
     def GetClassName(self):
         return "Gui::PythonWorkbench"
