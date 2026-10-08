@@ -463,140 +463,138 @@ class ParametricModel:
         solved: dict[sympy.Symbol, Any] = {}
 
         # --------------------------------------------------------------
-        # Phase 1: Fast Linear System Solving (linsolve)
+        # 1. Direct Equation Propagation (Trivial Assignments)
         # --------------------------------------------------------------
-        linear_eqs = []
-        non_linear_eqs = []
-        all_var_symbols = list(point_vars)
-
+        remaining_eqs = []
         for eq in equations:
-            try:
-                poly = eq.as_poly(*all_var_symbols)
-                if poly is not None and poly.total_degree() <= 1:
-                    linear_eqs.append(eq)
-                else:
-                    non_linear_eqs.append(eq)
-            except Exception:  # noqa: BLE001
-                non_linear_eqs.append(eq)
-
-        if linear_eqs:
-            try:
-                lin_sol = sympy.linsolve(linear_eqs, all_var_symbols)
-                if lin_sol:
-                    sol_tuple = next(iter(lin_sol))
-                    for var, expr in zip(all_var_symbols, sol_tuple):
-                        # Retain closed expressions that depend only on parameters
-                        free_pts = [s for s in expr.free_symbols if s in point_vars]
-                        if not free_pts and expr != var:
-                            solved[var] = expr
-            except Exception:  # noqa: BLE001, S110
-                pass
-
-        # --------------------------------------------------------------
-        # Phase 2: Incremental 1-Variable Elimination
-        # --------------------------------------------------------------
-        remaining = [eq.subs(solved) for eq in (non_linear_eqs + linear_eqs)]
-        progress = True
-        iterations = 0
-
-        while progress and iterations < 20:
-            progress = False
-            iterations += 1
-            next_remaining: list[Any] = []
-
-            for eq in remaining:
-                eq_sub = sympy.expand(eq.subs(solved))
-                unknowns = self._unknowns(eq_sub, point_vars - set(solved))
-
-                if len(unknowns) != 1:
-                    if unknowns:
-                        next_remaining.append(eq_sub)
-                    continue
-
-                target = unknowns[0]
+            # Check for direct assignments: var = 0 or var = param
+            free = eq.free_symbols & point_vars
+            if len(free) == 1:
+                target = next(iter(free))
                 try:
-                    # Solve only if degree <= 2 to avoid timeout
-                    poly = eq_sub.as_poly(target)
-                    if poly is not None and poly.degree() > 2:
-                        next_remaining.append(eq_sub)
-                        continue
+                    poly = eq.as_poly(target)
+                    if poly is not None and poly.degree() == 1:
+                        roots = sympy.solve(eq, target, check=False, simplify=False)
+                        if roots and not (roots[0].free_symbols & point_vars):
+                            solved[target] = roots[0]
+                            continue
+                except Exception:  # noqa: BLE001, S110
+                    pass
 
-                    roots = sympy.solve(eq_sub, target, dict=False)
-                except Exception:  # noqa: BLE001
-                    roots = []
+            remaining_eqs.append(eq)
 
-                if not roots:
-                    next_remaining.append(eq_sub)
+        # --------------------------------------------------------------
+        # 2. Partition into Connected Components
+        # --------------------------------------------------------------
+        # Build adjacency graph between point variables
+        adj: dict[sympy.Symbol, set[sympy.Symbol]] = {v: set() for v in point_vars}
+        var_to_eqs: dict[sympy.Symbol, list[sympy.Expr]] = {v: [] for v in point_vars}
+
+        for eq in remaining_eqs:
+            eq_vars = eq.free_symbols & point_vars
+            for v in eq_vars:
+                var_to_eqs[v].append(eq)
+            for v1 in eq_vars:
+                for v2 in eq_vars:
+                    if v1 != v2:
+                        adj[v1].add(v2)
+
+        visited: set[sympy.Symbol] = set()
+        components: list[set[sympy.Symbol]] = []
+
+        for v in point_vars:
+            if v in visited:
+                continue
+            comp = set()
+            queue = [v]
+            visited.add(v)
+            while queue:
+                curr = queue.pop(0)
+                comp.add(curr)
+                for nbr in adj.get(curr, set()):
+                    if nbr not in visited:
+                        visited.add(nbr)
+                        queue.append(nbr)
+            components.append(comp)
+
+        # --------------------------------------------------------------
+        # 3. Solve Each Component Independently
+        # --------------------------------------------------------------
+        for comp_vars in components:
+            comp_eqs_set = set()
+            for v in comp_vars:
+                for eq in var_to_eqs[v]:
+                    comp_eqs_set.add(eq)
+
+            comp_eqs = list(comp_eqs_set)
+            comp_var_list = list(comp_vars)
+
+            # Classify component equations
+            linear_eqs = []
+            quad_eqs = []
+
+            for eq in comp_eqs:
+                eq_sub = eq.subs(solved)
+                free = eq_sub.free_symbols & comp_vars
+                if not free:
                     continue
+                try:
+                    poly = eq_sub.as_poly(*list(free))
+                    if poly is not None and poly.total_degree() <= 1:
+                        linear_eqs.append(eq_sub)
+                    elif poly is not None and poly.total_degree() <= 2:
+                        quad_eqs.append(eq_sub)
+                except Exception:  # noqa: BLE001, S110
+                    pass
 
-                chosen = self._choose_root(roots, target, solved)
-                solved[target] = chosen
-                progress = True
+            # Step A: Linear elimination on this component
+            if linear_eqs:
+                try:
+                    lin_sol = sympy.linsolve(linear_eqs, comp_var_list)
+                    if lin_sol:
+                        sol_tuple = next(iter(lin_sol))
+                        for var, expr in zip(comp_var_list, sol_tuple):
+                            free = expr.free_symbols & point_vars
+                            if not free and expr != var:
+                                solved[var] = expr
+                except Exception:  # noqa: BLE001, S110
+                    pass
 
-            remaining = next_remaining
+            # Step B: Solve remaining 1-variable quadratics in this component
+            progress = True
+            iterations = 0
+            comp_remaining = [eq.subs(solved) for eq in quad_eqs]
 
-        # --------------------------------------------------------------
-        # Phase 3: Connected Component Datum Anchoring
-        # --------------------------------------------------------------
-        unresolved = point_vars - set(solved)
-        if unresolved:
-            # Anchor one unresolved coordinate per connected group to FreeCAD datum
-            adjacency: dict[sympy.Symbol, set[sympy.Symbol]] = {
-                v: set() for v in unresolved
-            }
-            for eq in remaining:
-                eq_vars = [v for v in eq.free_symbols if v in unresolved]
-                for v1 in eq_vars:
-                    for v2 in eq_vars:
-                        if v1 != v2:
-                            adjacency[v1].add(v2)
+            while progress and iterations < 10:
+                progress = False
+                iterations += 1
+                next_rem = []
 
-            visited: set[sympy.Symbol] = set()
-            for root_var in list(unresolved):
-                if root_var in visited or root_var in solved:
-                    continue
+                for eq in comp_remaining:
+                    eq_sub = eq.subs(solved)
+                    unknowns = list(eq_sub.free_symbols & comp_vars - set(solved))
 
-                # BFS to collect component
-                comp = set()
-                queue = [root_var]
-                visited.add(root_var)
-                while queue:
-                    curr = queue.pop(0)
-                    comp.add(curr)
-                    for nbr in adjacency.get(curr, set()):
-                        if nbr not in visited:
-                            visited.add(nbr)
-                            queue.append(nbr)
+                    if len(unknowns) == 1:
+                        target = unknowns[0]
+                        try:
+                            roots = sympy.solve(
+                                eq_sub, target, check=False, simplify=False
+                            )
+                            if roots:
+                                solved[target] = self._choose_root(
+                                    roots, target, solved
+                                )
+                                progress = True
+                                continue
+                        except Exception:  # noqa: BLE001, S110
+                            pass
 
-                # Anchor the first variable of this component to FreeCAD datum
-                axis, point = str(root_var).split("_", 1)
-                coord_idx = 0 if axis == "x" else 1
-                numeric_val = self._numeric_coords.get(point, (0.0, 0.0))[coord_idx]
-                solved[root_var] = sympy.Float(round(numeric_val, 4))
-
-                # Propagate with this anchor
-                prop_progress = True
-                while prop_progress:
-                    prop_progress = False
-                    for eq in remaining:
-                        eq2 = sympy.expand(eq.subs(solved))
-                        unk = self._unknowns(eq2, point_vars - set(solved))
-                        if len(unk) == 1:
-                            target = unk[0]
-                            try:
-                                poly = eq2.as_poly(target)
-                                if poly is not None and poly.degree() <= 2:
-                                    rts = sympy.solve(eq2, target, dict=False)
-                                    if rts:
-                                        solved[target] = self._choose_root(
-                                            rts, target, solved
-                                        )
-                                        prop_progress = True
-                            except Exception:  # noqa: BLE001, S110
-                                pass
+                    if unknowns:
+                        next_rem.append(eq_sub)
+                comp_remaining = next_rem
 
         # --------------------------------------------------------------
-        # Phase 4: Fast Back-Substitution (No global simplify)
+        # 4. Clean Back-Substitution (No Global simplify)
         # --------------------------------------------------------------
         for _ in range(3):
             changed = False
@@ -609,7 +607,7 @@ class ParametricModel:
                 break
 
         # --------------------------------------------------------------
-        # Phase 5: Emit Closed-Form Coordinate Expressions
+        # 5. Emit Solutions (Unsolved Points Fallback to FreeCAD Datum)
         # --------------------------------------------------------------
         for point, (xs, ys) in symbols.items():
             x = solved.get(xs)
@@ -631,29 +629,6 @@ class ParametricModel:
                 y_str = self._expr_to_asy(y)
 
             self.point_solutions[point] = (x_str, y_str)
-
-        # --------------------------------------------------------------
-        # Phase 6: Parameter Usage Tracking
-        # --------------------------------------------------------------
-        for name in self.param_symbols:
-            used = False
-            for x_str, y_str in self.point_solutions.values():
-                if re.search(rf"\b{re.escape(name)}\b", x_str) or re.search(
-                    rf"\b{re.escape(name)}\b", y_str
-                ):
-                    used = True
-                    break
-
-            if not used:
-                for value in self.radius_params.values():
-                    if re.search(rf"\b{re.escape(name)}\b", value):
-                        used = True
-                        break
-
-            if used:
-                self.used_parameters.add(name)
-            else:
-                self.unused_parameters.add(name)
 
     @staticmethod
     def _closed_expression(expr: Any, point_vars: set[sympy.Symbol]) -> Any | None:
