@@ -200,7 +200,7 @@ def export_sketch(sketch_obj: Any) -> None:
     if cfg.print_dot_labels:
         show_dots = "\n// --- Dots & Labels ---\n"
         for name in pairs_dict.values():
-            show_dots += f'dot("${name}$", {name});\n'
+            show_dots += f'label(Label("${name.replace("P", "")}$", Fill(black), p = white + fontsize(4pt)), {name});\n'
 
     date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # noqa: DTZ005
     preamble = build_preamble(date_str)
