@@ -12,9 +12,9 @@ import re
 from typing import Any
 
 import sympy
+
 import draw
 from coordinates import get_coordinates
-
 
 _GEO_NONE = -2000
 _XAXIS_ID = -1
@@ -111,7 +111,7 @@ class ParametricModel:
                 elif kind == "Point":
                     point = getattr(geom, "Location", geom)
                     self._add_point(geo_id, 1, point)
-            except Exception:
+            except Exception:  # noqa: BLE001, S112
                 continue
 
         for coord_str, name in self.pairs_dict.items():
@@ -147,12 +147,12 @@ class ParametricModel:
         serial = 1
 
         prefixes = {
-            "DistanceX": "dx",
-            "DistanceY": "dy",
+            "DistanceX": "X",
+            "DistanceY": "Y",
             "Distance": "L",
             "Radius": "R",
             "Diameter": "D",
-            "Angle": "ang",
+            "Angle": "A",
         }
 
         for idx, c in enumerate(constraints):
@@ -444,7 +444,7 @@ class ParametricModel:
                 if err < best_err:
                     best = root
                     best_err = err
-            except Exception:
+            except Exception:  # noqa: BLE001, S112
                 continue
 
         return best
@@ -476,20 +476,20 @@ class ParametricModel:
                     linear_eqs.append(eq)
                 else:
                     non_linear_eqs.append(eq)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 non_linear_eqs.append(eq)
 
         if linear_eqs:
             try:
                 lin_sol = sympy.linsolve(linear_eqs, all_var_symbols)
                 if lin_sol:
-                    sol_tuple = list(lin_sol)[0]
+                    sol_tuple = next(iter(lin_sol))
                     for var, expr in zip(all_var_symbols, sol_tuple):
                         # Retain closed expressions that depend only on parameters
                         free_pts = [s for s in expr.free_symbols if s in point_vars]
                         if not free_pts and expr != var:
                             solved[var] = expr
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass
 
         # --------------------------------------------------------------
@@ -522,7 +522,7 @@ class ParametricModel:
                         continue
 
                     roots = sympy.solve(eq_sub, target, dict=False)
-                except Exception:
+                except Exception:  # noqa: BLE001
                     roots = []
 
                 if not roots:
@@ -592,7 +592,7 @@ class ParametricModel:
                                             rts, target, solved
                                         )
                                         prop_progress = True
-                            except Exception:
+                            except Exception:  # noqa: BLE001, S110
                                 pass
 
         # --------------------------------------------------------------
